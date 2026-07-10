@@ -797,7 +797,12 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 		if marker := sshWindowMarker(windowID); marker != "" {
 			return marker
 		}
-		if client == "" {
+		// A pending agent window — its 3-pane layout was built via `prefix ]` with a
+		// typed title (persisted to @agent_title) but the agent process hasn't come
+		// up yet, so @agent_client is still empty. Name it from @agent_title so the
+		// typed title shows immediately instead of the bare shell name ("zsh"); once
+		// claude/codex launches, @agent_client is set and the live title takes over.
+		if client == "" && sanitizeWindowMarker(tmuxWindowOption(windowID, "@agent_title")) == "" {
 			return ""
 		}
 	}
