@@ -29,6 +29,11 @@ fi
 agent_pane="$(tmux new-window -P -F '#{pane_id}' -n "agent" -c "$project_root")"
 window_id="$(tmux display-message -p -t "$agent_pane" '#{window_id}')"
 
+# 把 placeholder 名字登记为「上次自动写入的名字」，让 autoRenameWindow 认出这是
+# 自动管理窗（current == @agent_window_name_auto）而非用户手动命名，从而在 agent
+# 进程起来后正常用 @agent_title 接管命名，而不是把 "agent" 当手动名冻结自动命名。
+tmux set -w -t "$window_id" @agent_window_name_auto "agent"
+
 if [[ -n "$title" ]]; then
   tmux set -w -t "$window_id" @agent_title "$title"
 fi

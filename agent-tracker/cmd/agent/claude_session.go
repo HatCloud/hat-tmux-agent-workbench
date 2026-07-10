@@ -131,49 +131,13 @@ func shellSQLString(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// agentTitleForWindow normalizes a raw session title (collapse whitespace) but
+// does NOT truncate: the window name is the FULL title at the data layer, so
+// both #{window_name} consumers (the tmux tab #W and the Window Nav Name column)
+// see the complete name. Truncation is a display concern applied only at the
+// status-bar format (window-status-format's width-limited #W).
 func agentTitleForWindow(title string) string {
-	title = strings.Join(strings.Fields(strings.TrimSpace(title)), " ")
-	return truncateDisplayCells(title, 20)
-}
-
-func truncateDisplayCells(text string, maxCells int) string {
-	if maxCells <= 0 {
-		return ""
-	}
-	if displayCells(text) <= maxCells {
-		return text
-	}
-	target := maxCells - 1
-	var b strings.Builder
-	width := 0
-	r := []rune(text)
-	for _, ch := range r {
-		cw := runeDisplayCells(ch)
-		if width+cw > target {
-			break
-		}
-		b.WriteRune(ch)
-		width += cw
-	}
-	return b.String() + "…"
-}
-
-func displayCells(text string) int {
-	width := 0
-	for _, r := range text {
-		width += runeDisplayCells(r)
-	}
-	return width
-}
-
-func runeDisplayCells(r rune) int {
-	if r == '\t' {
-		return 4
-	}
-	if r < 0x80 {
-		return 1
-	}
-	return 2
+	return strings.Join(strings.Fields(strings.TrimSpace(title)), " ")
 }
 
 func latestCodexThreadForCWD(cwd string) (codexThreadMeta, bool) {

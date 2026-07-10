@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# prefix ] / prefix [ 共用入口：在指定目录新建三 pane agent 窗口。
-#   mode=here     ：直接用当前目录建，无任何输入（prefix ]，New agent prompt=OFF）。
-#   mode=ask-title：在 display-popup 里 read 一个窗口标题后用当前目录建
-#                   （prefix ]，New agent prompt=ON，默认）。空标题=自动命名。
-#   mode=ask      ：在 display-popup 里用 fzf 从 z 的目录历史（~/.z）里选：
-#                   输入关键字即过滤（frecency 排序，常用目录在前），Enter/Tab 选中高亮项；
-#                   没有匹配时回车直接把输入当路径用；fzf 不可用时回退 read -e 手输。
-# here / ask 名字走默认（空），交给 agent-tracker 自动命名。
+# prefix [ 入口（及 prefix ] 的 OFF 直建路径）：在指定目录新建三 pane agent 窗口。
+#   mode=here：直接用当前目录建，无任何输入（prefix ]，New agent prompt=OFF）。
+#   mode=ask ：在 display-popup 里用 fzf 从 z 的目录历史（~/.z）里选：
+#              输入关键字即过滤（frecency 排序，常用目录在前），Enter/Tab 选中高亮项；
+#              没有匹配时回车直接把输入当路径用；fzf 不可用时回退 read -e 手输。
+# 两种 mode 名字都走默认（空），交给 agent-tracker 自动命名。
+# prefix ] 的 ON 路径（先输标题）改由 tmux 原生 command-prompt 直接调 new_agent_window.sh。
 #
-# 用法：new_agent_window_prompt.sh <here|ask-title|ask> <current_path>
+# 用法：new_agent_window_prompt.sh <here|ask> <current_path>
 
 mode="${1:?mode required}"
 cur="${2:-$PWD}"
@@ -37,16 +36,6 @@ z_candidates() {
 }
 
 dir="$cur"
-if [[ "$mode" == "ask-title" ]]; then
-  # 在当前目录建窗，先读一个窗口标题（空 = 交给自动命名）。
-  title=""
-  read -e -p "Window title (empty = auto): " title || exit 0
-  # trim 首尾空白
-  title="${title#"${title%%[![:space:]]*}"}"
-  title="${title%"${title##*[![:space:]]}"}"
-  exec "$scripts_dir/new_agent_window.sh" "$cur" "$title"
-fi
-
 if [[ "$mode" == "ask" ]]; then
   if command -v fzf >/dev/null 2>&1; then
     # --print-query：正常选中(0)输出「输入行+选中行」取末行；无匹配回车(1)只剩输入行，

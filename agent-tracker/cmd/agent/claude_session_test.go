@@ -281,14 +281,18 @@ func TestParseCodexRolloutsFromLsof(t *testing.T) {
 	}
 }
 
-func TestAgentTitleForWindowDisplayLimit(t *testing.T) {
+func TestAgentTitleForWindowNormalizesWithoutTruncation(t *testing.T) {
 	cases := []struct {
 		in   string
 		want string
 	}{
-		{"abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrs…"},
-		{"一二三四五六七八九十十一", "一二三四五六七八九…"},
+		// No truncation: the full name survives at the data layer.
+		{"abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"},
+		{"一二三四五六七八九十十一", "一二三四五六七八九十十一"},
+		{"2026-07-09-open-source-refactor", "2026-07-09-open-source-refactor"},
 		{"short title", "short title"},
+		// Whitespace is still collapsed/trimmed.
+		{"  many   spaces\there ", "many spaces here"},
 	}
 	for _, c := range cases {
 		if got := agentTitleForWindow(c.in); got != c.want {
