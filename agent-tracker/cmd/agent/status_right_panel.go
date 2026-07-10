@@ -1,0 +1,373 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+type statusRightPanelEntry struct {
+	Module    string
+	Title     string
+	Subtitle  string
+	Enabled   bool
+	Available bool
+	Indented  bool
+}
+
+type statusRightPanelModel struct {
+	entries      []statusRightPanelEntry
+	selected     int
+	scrollOffset int // first entry index to render
+	width        int
+	height       int
+	status       string
+	statusUntil  time.Time
+	showAltHints bool
+	requestBack  bool
+}
+
+func newStatusRightPanelModel() *statusRightPanelModel {
+	model := &statusRightPanelModel{}
+	model.reload()
+	return model
+}
+
+func (m *statusRightPanelModel) reload() {
+	entries := make([]statusRightPanelEntry, 0, len(statusRightModules()))
+	for _, module := range statusRightModules() {
+		available := true
+		indented := false
+		if module == statusRightModuleTodoPreview {
+			available = statusRightModuleEnabled(statusRightModuleTodos)
+			indented = true
+		}
+		entries = append(entries, statusRightPanelEntry{
+			Module:    module,
+			Title:     statusRightModuleLabel(module),
+			Subtitle:  capitalizeStatusRightDescription(statusRightModuleDescription(module)),
+			Enabled:   statusRightModuleEnabled(module),
+			Available: available,
+			Indented:  indented,
+		})
+	}
+	m.entries = entries
+	m.selected = clampInt(m.selected, 0, maxInt(0, len(m.entries)-1))
+}
+
+func capitalizeStatusRightDescription(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func (m *statusRightPanelModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m *statusRightPanelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	case tea.KeyMsg:
+		if isAltFooterToggleKey(msg) {
+			m.showAltHints = !m.showAltHints
+			return m, nil
+		}
+		m.showAltHints = false
+		switch msg.String() {
+		case "esc", "h", "H":
+			m.requestBack = true
+		case "ctrl+k", "alt+k", "up", "K", "k":
+			m.selected = clampInt(m.selected-1, 0, maxInt(0, len(m.entries)-1))
+			m.adjustScroll()
+		case "ctrl+j", "alt+j", "down", "J", "j":
+			m.selected = clampInt(m.selected+1, 0, maxInt(0, len(m.entries)-1))
+			m.adjustScroll()
+		case "enter", " ", "l", "L":
+			m.toggleSelected()
+		}
+	}
+	return m, nil
+}
+
+func (m *statusRightPanelModel) toggleSelected() {
+	entry, ok := m.currentEntry()
+	if !ok {
+		return
+	}
+	if !entry.Available {
+		m.setStatus("Enable Todos first", 1500*time.Millisecond)
+		return
+	}
+	if err := togglePaletteStatusRightModule(entry.Module); err != nil {
+		m.setStatus(err.Error(), 1500*time.Millisecond)
+		return
+	}
+	m.reload()
+	updated, ok := m.currentEntry()
+	if !ok {
+		return
+	}
+	verb := "disabled"
+	if updated.Enabled {
+		verb = "enabled"
+	}
+	m.setStatus(fmt.Sprintf("%s %s", updated.Title, verb), 1500*time.Millisecond)
+}
+
+func (m *statusRightPanelModel) currentEntry() (statusRightPanelEntry, bool) {
+	if len(m.entries) == 0 || m.selected < 0 || m.selected >= len(m.entries) {
+		return statusRightPanelEntry{}, false
+	}
+	return m.entries[m.selected], true
+}
+
+// entryRowCount returns terminal rows for an entry.
+func entryRowCount(e statusRightPanelEntry) int {
+	return 3
+}
+
+// adjustScroll ensures selected is visible.
+func (m *statusRightPanelModel) adjustScroll() {
+	bodyHeight := maxInt(8, m.height-7)
+	available := bodyHeight - 2 // subtract: count line + blank line
+
+	if m.selected < m.scrollOffset {
+		m.scrollOffset = m.selected
+		return
+	}
+	rows := 0
+	for i := m.scrollOffset; i <= m.selected && i < len(m.entries); i++ {
+		rows += entryRowCount(m.entries[i])
+	}
+	if rows <= available {
+		return
+	}
+	// Scroll so selected is at bottom
+	accumulated := 0
+	for i := m.selected; i >= 0; i-- {
+		accumulated += entryRowCount(m.entries[i])
+		if accumulated >= available {
+			m.scrollOffset = i + 1
+			return
+		}
+	}
+	m.scrollOffset = 0
+}
+
+func (m *statusRightPanelModel) View() string {
+	return m.render(newPaletteStyles(), m.width, m.height)
+}
+
+func (m *statusRightPanelModel) render(styles paletteStyles, width, height int) string {
+	if width <= 0 {
+		width = 96
+	}
+	if height <= 0 {
+		height = 28
+	}
+	header := lipgloss.JoinVertical(lipgloss.Left,
+		styles.title.Render("Status Bar"),
+		styles.meta.Render("Interactive control center for tmux bottom bar modules"),
+		styles.meta.Render("Current layout: "+truncate(m.layoutSummary(), maxInt(28, width-2))),
+	)
+
+	lines := []string{styles.meta.Render(fmt.Sprintf("%d controls", len(m.entries))), ""}
+	bodyHeight := maxInt(8, height-7)
+	available := bodyHeight - 2 // initial 2 rows (count + blank)
+	usedRows := 0
+	for idx, entry := range m.entries {
+		if idx < m.scrollOffset {
+			continue
+		}
+		if usedRows+entryRowCount(entry) > available {
+			break
+		}
+		usedRows += entryRowCount(entry)
+		rowStyle := styles.item.Width(maxInt(24, width-2))
+		titleStyle := styles.itemTitle
+		metaStyle := styles.itemSubtitle
+		detailStyle := styles.meta
+		fillStyle := lipgloss.NewStyle()
+		badgeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("235")).Background(lipgloss.Color("241")).Padding(0, 1).Bold(true)
+		badgeLabel := "OFF"
+		if entry.Enabled {
+			badgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("235")).Background(lipgloss.Color("150")).Padding(0, 1).Bold(true)
+			badgeLabel = "ON"
+		}
+		if !entry.Available {
+			titleStyle = titleStyle.Foreground(lipgloss.Color("245"))
+			metaStyle = metaStyle.Foreground(lipgloss.Color("242"))
+			detailStyle = detailStyle.Foreground(lipgloss.Color("242"))
+			badgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Background(lipgloss.Color("236")).Padding(0, 1).Bold(true)
+		}
+		if idx == m.selected {
+			selectedBG := lipgloss.Color("238")
+			rowStyle = styles.selectedItem.Width(maxInt(24, width-2))
+			titleStyle = titleStyle.Background(selectedBG).Foreground(lipgloss.Color("230"))
+			metaStyle = styles.selectedSubtle.Background(selectedBG)
+			detailStyle = styles.selectedSubtle.Background(selectedBG)
+			fillStyle = fillStyle.Background(selectedBG)
+			if !entry.Available {
+				titleStyle = titleStyle.Foreground(lipgloss.Color("250"))
+				metaStyle = metaStyle.Foreground(lipgloss.Color("247"))
+				detailStyle = detailStyle.Foreground(lipgloss.Color("247"))
+				badgeStyle = badgeStyle.Background(selectedBG).Foreground(lipgloss.Color("247"))
+			}
+		}
+		badge := badgeStyle.Render(badgeLabel)
+		innerWidth := maxInt(22, width-2)
+		titleText := entry.Title
+		if entry.Indented {
+			titleText = "  " + titleText
+		}
+		titleText = truncate(titleText, maxInt(8, innerWidth-lipgloss.Width(badge)-1))
+		gapWidth := maxInt(1, innerWidth-lipgloss.Width(titleText)-lipgloss.Width(badge))
+		titleRow := lipgloss.JoinHorizontal(lipgloss.Left,
+			titleStyle.Render(titleText),
+			fillStyle.Render(strings.Repeat(" ", gapWidth)),
+			badge,
+		)
+		detail := entry.Subtitle + ". " + statusRightVisibilityText(entry.Enabled, entry.Available)
+		if entry.Indented {
+			detail = "  " + detail
+		}
+		detailText := truncate(detail, innerWidth)
+		detailGap := maxInt(0, innerWidth-lipgloss.Width(detailText))
+		detailRow := lipgloss.JoinHorizontal(lipgloss.Left,
+			metaStyle.Render(detailText),
+			fillStyle.Render(strings.Repeat(" ", detailGap)),
+		)
+		orderText := statusRightOrderHint(entry.Module, entry.Enabled, entry.Available)
+		if entry.Indented {
+			orderText = "  " + orderText
+		}
+		orderText = truncate(orderText, innerWidth)
+		orderGap := maxInt(0, innerWidth-lipgloss.Width(orderText))
+		orderRow := lipgloss.JoinHorizontal(lipgloss.Left,
+			detailStyle.Render(orderText),
+			fillStyle.Render(strings.Repeat(" ", orderGap)),
+		)
+		lines = append(lines, rowStyle.Render(lipgloss.JoinVertical(lipgloss.Left, titleRow, detailRow, orderRow)))
+	}
+	body := lipgloss.NewStyle().Height(bodyHeight).Render(strings.Join(lines, "\n"))
+	footer := m.renderFooter(styles, width)
+	view := lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", footer)
+	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(view)
+}
+
+func statusRightVisibilityText(enabled, available bool) string {
+	if !available {
+		return "Disabled until Todos is enabled"
+	}
+	if enabled {
+		return "Visible in the tmux bottom-right status"
+	}
+	return "Hidden from the tmux bottom-right status"
+}
+
+func statusRightOrderHint(module string, enabled, available bool) string {
+	switch module {
+	case windowNameOptionStatus:
+		if enabled {
+			return "[B]/[I] status prefix is shown in window name"
+		}
+		return "Status prefix is hidden from window name"
+	case windowNameOptionPath:
+		if enabled {
+			return "Project directory is shown in window name"
+		}
+		return "Project directory is hidden from window name"
+	case windowNameOptionModel:
+		if enabled {
+			return "Model name [sonnet/opus/…] is shown in window name"
+		}
+		return "Model name is hidden from window name"
+	}
+	if module == statusRightModuleTodoPreview {
+		if !available {
+			if enabled {
+				return "Will appear inside Todos when Todos is re-enabled"
+			}
+			return "Enable Todos to configure this preview"
+		}
+		if enabled {
+			return "Shown inside Todos when Todos is enabled"
+		}
+		return "Hidden inside Todos until re-enabled"
+	}
+	prefix := "Order slot: " + statusRightModuleLabel(module)
+	if enabled {
+		return prefix + " follows the fixed module order"
+	}
+	return prefix + " stays reserved until re-enabled"
+}
+
+func (m *statusRightPanelModel) layoutSummary() string {
+	labels := make([]string, 0, len(m.entries))
+	for _, entry := range m.entries {
+		if entry.Enabled && entry.Module != statusRightModuleTodoPreview {
+			labels = append(labels, entry.Title)
+		}
+	}
+	if len(labels) == 0 {
+		return "nothing enabled"
+	}
+	return strings.Join(labels, "  ->  ")
+}
+
+func (m *statusRightPanelModel) renderFooter(styles paletteStyles, width int) string {
+	status := strings.TrimSpace(m.currentStatus())
+	renderSegments := func(pairs [][2]string) string {
+		return renderShortcutPairs(func(v string) string { return styles.shortcutKey.Render(v) }, func(v string) string { return styles.shortcutText.Render(v) }, "   ", pairs)
+	}
+	footer := ""
+	if m.showAltHints {
+		footer = pickRenderedShortcutFooter(width, renderSegments,
+			[][2]string{{"Space", "toggle"}, {"Alt-S", "close"}, {footerHintToggleKey, "hide"}},
+			[][2]string{{"Space", "toggle"}, {"Alt-S", "close"}},
+		)
+	} else {
+		footer = pickRenderedShortcutFooter(width, renderSegments,
+			[][2]string{{"J/K", "move"}, {"Enter", "toggle"}, {"Esc", "back"}, {footerHintToggleKey, "more"}},
+			[][2]string{{"J/K", "move"}, {"Enter", "toggle"}, {footerHintToggleKey, "more"}},
+			[][2]string{{"Esc", "back"}, {footerHintToggleKey, "more"}},
+		)
+	}
+	if status != "" {
+		statusText := styles.statusBad.Render(truncate(status, maxInt(12, minInt(24, width/3))))
+		if lipgloss.Width(footer)+2+lipgloss.Width(statusText) <= width {
+			gap := width - lipgloss.Width(footer) - lipgloss.Width(statusText)
+			if gap < 2 {
+				gap = 2
+			}
+			return footer + strings.Repeat(" ", gap) + statusText
+		}
+		return statusText
+	}
+	return lipgloss.NewStyle().Width(width).Render(footer)
+}
+
+func (m *statusRightPanelModel) setStatus(text string, duration time.Duration) {
+	m.status = text
+	m.statusUntil = time.Now().Add(duration)
+}
+
+func (m *statusRightPanelModel) currentStatus() string {
+	if m.status == "" {
+		return ""
+	}
+	if !m.statusUntil.IsZero() && time.Now().After(m.statusUntil) {
+		m.status = ""
+		return ""
+	}
+	return m.status
+}

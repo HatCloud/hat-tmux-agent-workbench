@@ -1,0 +1,1823 @@
+#!/bin/bash
+#
+# hat-config setup wizard — interactive + non-interactive/CLI installer front-end.
+#
+# BASH 3.2 COMPATIBLE (macOS system /bin/bash). Do NOT use bash 4+ syntax:
+#   no `declare -A`, no `${var,,}`, no `readarray`/`mapfile`, no `${!arr[@]}`
+#   name-ref. i18n uses prefix-variable families + indirect expansion `${!v}`.
+#
+# The front-end parses flags, resolves the decision table, runs the dependency /
+# icon / keymap / statusline modules, and finally assembles + invokes
+# deploy.sh install with the chosen --skip-* flags (or prints them under
+# --dry-run). Intrusive actions default to skip in non-interactive mode.
+#
+# Subcommands:
+#   (default)      run the wizard (interactive) / resolve+emit (non-interactive)
+#   agent-guide    emit a static machine-readable JSON contract for agents
+
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# i18n — MSG_<lang>_<key> prefix families + msg() indirect expansion.
+# Add a key: define BOTH MSG_zh_<key> and MSG_en_<key>.
+# ---------------------------------------------------------------------------
+MSG_zh_title='hat-config 安装向导'
+MSG_en_title='hat-config setup wizard'
+
+MSG_zh_lang_choose='选择语言 / Select language:  1) 中文   2) English'
+MSG_en_lang_choose='Select language / 选择语言:  1) 中文   2) English'
+
+MSG_zh_summary_header='已解析的决策（未执行任何安装动作）：'
+MSG_en_summary_header='Resolved decisions (no install action performed):'
+
+MSG_zh_ci_interactive_abort='检测到 CI 环境，无法进入交互模式（--interactive 与 $CI 冲突）。'
+MSG_en_ci_interactive_abort='CI detected; interactive mode is not available (--interactive conflicts with $CI).'
+
+MSG_zh_invalid_flag='未知选项'
+MSG_en_invalid_flag='unknown option'
+
+MSG_zh_invalid_value='非法取值'
+MSG_en_invalid_value='invalid value'
+
+MSG_zh_allowed='可选值'
+MSG_en_allowed='allowed'
+
+MSG_zh_missing_value='缺少取值'
+MSG_en_missing_value='missing value for'
+
+MSG_zh_flag_no_value='该选项不接受取值'
+MSG_en_flag_no_value='flag takes no value'
+
+MSG_zh_both_modes_warn='同时指定了 --non-interactive 与 --interactive，采用非交互模式。'
+MSG_en_both_modes_warn='both --non-interactive and --interactive given; using non-interactive.'
+
+MSG_zh_tmux='安装 tmux managed block 到 ~/.tmux.conf?'
+MSG_en_tmux='Install the managed tmux block into ~/.tmux.conf?'
+
+MSG_zh_daemon='安装 agent-tracker daemon (launchd)?'
+MSG_en_daemon='Install the agent-tracker daemon (launchd)?'
+
+MSG_zh_ws_timer='安装 workspace 自动存档定时器 (launchd)?'
+MSG_en_ws_timer='Install the workspace auto-save timer (launchd)?'
+
+MSG_zh_stop_hook='安装 Claude Stop hook (settings.json)?'
+MSG_en_stop_hook='Install the Claude Stop hook (settings.json)?'
+
+MSG_zh_statusline='注册 Claude statusLine (settings.json)?'
+MSG_en_statusline='Register the Claude statusLine (settings.json)?'
+
+MSG_zh_alias='安装 shell alias (agent / tmux-resume)?'
+MSG_en_alias='Install shell aliases (agent / tmux-resume)?'
+
+MSG_zh_wizard_done='向导结束（骨架：尚未执行部署）。'
+MSG_en_wizard_done='Wizard complete (skeleton: deploy not yet executed).'
+
+# --- deps module ---
+MSG_zh_deps_header='依赖检查：'
+MSG_en_deps_header='Dependency check:'
+
+MSG_zh_deps_skipped='已跳过依赖检查（--deps=skip）。'
+MSG_en_deps_skipped='Dependency check skipped (--deps=skip).'
+
+MSG_zh_deps_required_missing='缺少必需依赖，标记为 degraded 并退出。'
+MSG_en_deps_required_missing='Required dependencies are missing; marking degraded and exiting.'
+
+MSG_zh_deps_optional_note='可选依赖缺失（功能降级，不影响主流程）。'
+MSG_en_deps_optional_note='Optional dependencies missing (feature degradation only).'
+
+MSG_zh_deps_auto_disclose='将通过 Homebrew 安装以下缺失依赖：'
+MSG_en_deps_auto_disclose='The following missing dependencies will be installed via Homebrew:'
+
+MSG_zh_deps_auto_confirm='确认一次性安装以上全部依赖？'
+MSG_en_deps_auto_confirm='Install all of the above dependencies in one batch?'
+
+MSG_zh_deps_auto_declined='已取消自动安装；相关依赖仍缺失，标记为 degraded。'
+MSG_en_deps_auto_declined='Auto-install declined; dependencies remain missing, marking degraded.'
+
+MSG_zh_deps_installing='正在安装：'
+MSG_en_deps_installing='Installing:'
+
+MSG_zh_deps_no_brew='未检测到 Homebrew。请先安装 Homebrew：'
+MSG_en_deps_no_brew='Homebrew not found. Install Homebrew first:'
+
+MSG_zh_deps_manual_then='然后安装缺失的依赖：'
+MSG_en_deps_manual_then='Then install the missing dependencies:'
+
+MSG_zh_deps_nothing='所有依赖均已满足，无需安装。'
+MSG_en_deps_nothing='All dependencies satisfied; nothing to install.'
+
+# --- icon self-test module ---
+MSG_zh_icon_header='图标自检——请对照下面三行示例判断你的终端能正确显示哪一行：'
+MSG_en_icon_header='Icon self-test — compare the three sample rows below to see which your terminal renders correctly:'
+
+MSG_zh_icon_row_nerd='第 1 行 (nerd 芯片字形)：'
+MSG_en_icon_row_nerd='Row 1 (nerd chip glyph):'
+
+MSG_zh_icon_row_emoji='第 2 行 (emoji)：'
+MSG_en_icon_row_emoji='Row 2 (emoji):'
+
+MSG_zh_icon_row_ascii='第 3 行 (ascii)：'
+MSG_en_icon_row_ascii='Row 3 (ascii):'
+
+MSG_zh_icon_q1='第 1 行是否显示为一个芯片图标（而不是方框/问号）？'
+MSG_en_icon_q1='Does row 1 show a chip icon (not a box/question mark)?'
+
+MSG_zh_icon_q2='第 2 行的 emoji 是否正常显示？'
+MSG_en_icon_q2='Does the emoji on row 2 render fine?'
+
+MSG_zh_icon_written='已写入图标集：'
+MSG_en_icon_written='Wrote icon set:'
+
+MSG_zh_icon_nojq='无法写入配置（缺少 jq 或配置目录不可写）；已跳过图标写入（功能降级）。'
+MSG_en_icon_nojq='Could not write config (jq missing or config dir not writable); skipped icon write (degraded).'
+
+MSG_zh_config_lock_fail='无法获取配置写锁（目录不可创建）：'
+MSG_en_config_lock_fail='Could not acquire the config write lock (dir not creatable): '
+
+# --- keymap module ---
+MSG_zh_km_choose='键位方案：  1) default（默认键位，不改动）   2) compat（避让常见插件冲突）   3) minimal（仅保留 M-s 面板入口）'
+MSG_en_km_choose='Keymap preset:  1) default (keep defaults)   2) compat (avoid common plugin clashes)   3) minimal (keep only the M-s palette entry)'
+
+MSG_zh_km_header='键位定制：'
+MSG_en_km_header='Keymap customization:'
+
+MSG_zh_km_default_note='使用默认键位，不生成 override（删除 private/keymap.conf 即恢复默认）。'
+MSG_en_km_default_note='Using the default keymap; no override written (delete private/keymap.conf to restore defaults).'
+
+MSG_zh_km_preset_compat='应用 compat 预设（避让常见插件冲突：F12→F10、M-s→M-a）。'
+MSG_en_km_preset_compat='Applying the compat preset (avoids common plugin clashes: F12->F10, M-s->M-a).'
+
+MSG_zh_km_preset_minimal='应用 minimal 预设（仅保留 M-s 面板入口，其余核心键解绑）。'
+MSG_en_km_preset_minimal='Applying the minimal preset (keeps only the M-s palette entry; unbinds the rest).'
+
+MSG_zh_km_scan_skip='未找到可读的 ~/.tmux.conf，跳过冲突扫描。'
+MSG_en_km_scan_skip='No readable ~/.tmux.conf found; skipping the conflict scan.'
+
+MSG_zh_km_scan_conflicts='检测到与现有配置冲突的键：'
+MSG_en_km_scan_conflicts='Keys conflicting with your existing config:'
+
+MSG_zh_km_scan_none='未检测到键位冲突。'
+MSG_en_km_scan_none='No keymap conflicts detected.'
+
+MSG_zh_km_adjust_all='是否逐条调整全部核心键位（而不仅是冲突项）？'
+MSG_en_km_adjust_all='Adjust every core binding (not just the conflicts)?'
+
+MSG_zh_km_prompt_key='  输入新键（回车用建议值）'
+MSG_en_km_prompt_key='  Enter a new key (Enter for the suggestion)'
+
+MSG_zh_km_reject_key='  非法键位，已拒绝（不含 ; \ 引号/空格/换行）。请重新输入。'
+MSG_en_km_reject_key='  Rejected invalid key (no ; \ quotes/space/newline). Please re-enter.'
+
+MSG_zh_km_current='当前键'
+MSG_en_km_current='current'
+
+MSG_zh_km_suggest='建议'
+MSG_en_km_suggest='suggested'
+
+MSG_zh_km_written='已写入键位 override：'
+MSG_en_km_written='Wrote the keymap override: '
+
+MSG_zh_km_write_fail='无法写入键位 override（目录不可写）。'
+MSG_en_km_write_fail='Could not write the keymap override (dir not writable).'
+
+MSG_zh_km_no_diff='没有需要写入的差异，保持默认键位。'
+MSG_en_km_no_diff='No differing bindings to write; keeping the defaults.'
+
+MSG_zh_km_trial_ok='沙盒试载通过。'
+MSG_en_km_trial_ok='Sandbox trial-load passed.'
+
+MSG_zh_km_trial_fail='沙盒试载失败，已回滚：'
+MSG_en_km_trial_fail='Sandbox trial-load failed; rolled back: '
+
+# --- keymap binding descriptions ---
+MSG_zh_km_d_new_here='prefix ] 在当前目录新建 agent 窗口'
+MSG_en_km_d_new_here='prefix ] new agent window in the current dir'
+MSG_zh_km_d_new_pick='prefix [ 选目录后新建 agent 窗口'
+MSG_en_km_d_new_pick='prefix [ pick a dir, then a new agent window'
+MSG_zh_km_d_timer='prefix t 本窗口定时任务面板'
+MSG_en_km_d_timer='prefix t window timer panel'
+MSG_zh_km_d_todos='prefix T Todo 视图'
+MSG_en_km_d_todos='prefix T todo view'
+MSG_zh_km_d_winnav='prefix w Window 导航面板'
+MSG_en_km_d_winnav='prefix w window navigator'
+MSG_zh_km_d_ws_save='prefix s 存档当前 workspace'
+MSG_en_km_d_ws_save='prefix s save the current workspace'
+MSG_zh_km_d_ws_restore='prefix r 恢复最近 workspace'
+MSG_en_km_d_ws_restore='prefix r restore the last workspace'
+MSG_zh_km_d_ws_choose='prefix g 选历史快照恢复'
+MSG_en_km_d_ws_choose='prefix g pick a workspace snapshot'
+MSG_zh_km_d_palette='M-s Agent Palette 主菜单'
+MSG_en_km_d_palette='M-s Agent Palette main menu'
+MSG_zh_km_d_passthrough='F12 嵌套 SSH passthrough 切换'
+MSG_en_km_d_passthrough='F12 nested-SSH passthrough toggle'
+MSG_zh_km_d_inner_prefix='C-q 内层 tmux prefix 单发'
+MSG_en_km_d_inner_prefix='C-q send the inner-tmux prefix once'
+MSG_zh_km_d_pane_left='M-h 选择左侧 pane'
+MSG_en_km_d_pane_left='M-h select pane left'
+MSG_zh_km_d_pane_down='M-j 选择下方 pane'
+MSG_en_km_d_pane_down='M-j select pane down'
+MSG_zh_km_d_pane_up='M-k 选择上方 pane'
+MSG_en_km_d_pane_up='M-k select pane up'
+MSG_zh_km_d_pane_right='M-l 选择右侧 pane'
+MSG_en_km_d_pane_right='M-l select pane right'
+MSG_zh_km_d_session='按编号切换 session（工作空间）'
+MSG_en_km_d_session='switch session (workspace) by index'
+
+# --- statusline module (plan Task 8 + design C1/C4) ---
+MSG_zh_statusline_already='检测到已注册本项目的 statusLine（幂等，无需改动）。'
+MSG_en_statusline_already='This project statusLine is already registered (idempotent; nothing to do).'
+
+MSG_zh_statusline_found_other='检测到已有其它 statusLine，将以链式包裹（chain）方式接管。'
+MSG_en_statusline_found_other='An existing statusLine was found; will take over by chaining (wrap) it.'
+
+MSG_zh_statusline_chain_q='包裹现有 statusLine 并注册本项目 statusLine（chain）?'
+MSG_en_statusline_chain_q='Chain (wrap) your existing statusLine and register this project statusLine?'
+
+MSG_zh_statusline_old_writer='检测到旧的 rate-limits 写入器（会与新写入器并存双写），涉及以下行需先移除：'
+MSG_en_statusline_old_writer='An old rate-limits writer was found (would run concurrently with the new one); these lines must be removed first:'
+
+MSG_zh_statusline_migrate_confirm='确认删除以上写入 claude-rate-limits.json 的行（原文件备份为 .bak）？'
+MSG_en_statusline_migrate_confirm='Delete the lines above that write claude-rate-limits.json (original backed up as .bak)?'
+
+MSG_zh_statusline_old_writer_unverified='无法从 .command 解析出磁盘脚本，无法验证是否存在旧 rate-limits 写入器（不会静默允许 chain）：'
+MSG_en_statusline_old_writer_unverified='Could not resolve an on-disk script from .command; cannot verify whether an old rate-limits writer exists (will not silently allow chain): '
+
+MSG_zh_statusline_unverified_q='无法验证现有 statusLine 是否写入 claude-rate-limits.json；仍要继续 chain（风险自负）？'
+MSG_en_statusline_unverified_q='Cannot verify whether your existing statusLine writes claude-rate-limits.json; chain anyway (at your own risk)?'
+
+MSG_zh_statusline_migrate_broke='删除旧写入行后脚本语法损坏，已从 .bak 回滚；无法安全移除旧 rate-limits 写入器，statusline 保持不动，请手动处理：'
+MSG_en_statusline_migrate_broke='Removing the old writer lines broke the script syntax; rolled back from .bak. Could not safely remove the old rate-limits writer; leaving your statusline untouched — resolve manually: '
+
+MSG_zh_statusline_migrate_done='已移除旧写入器，备份保存于：'
+MSG_en_statusline_migrate_done='Removed the old writer; backup saved at: '
+
+MSG_zh_statusline_migrate_declined='已取消移除旧写入器；为避免双写同一缓存，statusline 决策回退为 skip（degraded）。'
+MSG_en_statusline_migrate_declined='Declined removing the old writer; to avoid two writers to the same cache, the statusline decision falls back to skip (degraded).'
+
+MSG_zh_statusline_chain_noread='无法读取 settings.json（缺 jq 或文件缺失），无法安全 chain，回退为 skip（degraded）。'
+MSG_en_statusline_chain_noread='Could not read settings.json (jq missing or file absent); cannot chain safely, falling back to skip (degraded).'
+
+MSG_zh_statusline_write_install='已写入 statusline_chain = {}（无链标记，使用内建渲染）。'
+MSG_en_statusline_write_install='Wrote statusline_chain = {} (no-chain marker; builtin render).'
+
+MSG_zh_statusline_write_chain='已写入 statusline_chain（command + original）。'
+MSG_en_statusline_write_chain='Wrote statusline_chain (command + original).'
+
+MSG_zh_statusline_write_fail='无法写入 statusline 配置（缺 jq 或目录不可写），标记为 degraded。'
+MSG_en_statusline_write_fail='Could not write the statusline config (jq missing or dir not writable); marking degraded.'
+
+# --- deploy assembly finale (plan Task 8) ---
+MSG_zh_deploy_dryrun='（dry-run）将执行部署命令： '
+MSG_en_deploy_dryrun='(dry-run) would run the deploy command: '
+
+MSG_zh_deploy_running='执行部署： '
+MSG_en_deploy_running='Running deploy: '
+
+# Selected language for msg(); resolved below from --lang / $LANG / en.
+LANG_SEL=en
+
+msg() {
+  # Indirect lookup MSG_<lang>_<key>; fall back to English, then the raw key,
+  # so a missing translation degrades gracefully instead of crashing under set -u.
+  local v="MSG_${LANG_SEL}_$1" out
+  out="${!v:-}"
+  if [ -z "$out" ]; then
+    v="MSG_en_$1"
+    out="${!v:-$1}"
+  fi
+  printf '%s' "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Output helpers.
+#   say()  — human prose. ALWAYS to STDERR (keeps stdout pure JSONL in --json).
+#   jstr() — JSON-encode a bash string via jq.
+#   emit() — one JSONL step object on STDOUT (only in --json mode).
+# ---------------------------------------------------------------------------
+say() {
+  printf '%s\n' "$*" >&2
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+jstr() {
+  printf '%s' "$1" | jq -Rs .
+}
+
+emit() {
+  # emit <step> <status: ok|skip|fail|degraded> <detail-json>
+  [ "$JSON_MODE" -eq 1 ] || return 0
+  printf '{"step":%s,"status":%s,"detail":%s}\n' \
+    "$(jstr "$1")" "$(jstr "$2")" "$3"
+}
+
+emit_decision() {
+  # emit_decision <step> <resolved-value>
+  local step="$1" value="$2" status
+  case "$value" in
+    skip) status=skip ;;
+    *) status=ok ;;
+  esac
+  emit "$step" "$status" "$(jq -cn --arg v "$value" '{value:$v}')"
+}
+
+emit_result() {
+  [ "$JSON_MODE" -eq 1 ] || return 0
+  printf '{"result":%s}\n' "$(jstr "$RUN_STATUS")"
+}
+
+# ---------------------------------------------------------------------------
+# Config location + cross-process write lock.
+#
+# The Go tracker (cmd/agent) writes ~/.config/agent-tracker/agent-config.json
+# under a mkdir lock at "<config-dir>/.config.lock.d" with a 5s stale timeout.
+# This bash writer MUST use the IDENTICAL lock dir + semantics so Go and the
+# wizard never clobber each other. Paths are overridable by env for tests.
+# ---------------------------------------------------------------------------
+SCRIPT_SELF="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SELF")" && pwd)"
+SCRIPT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+CONFIG_LOCK_STALE=5
+
+config_path() {
+  printf '%s' "${HAT_AGENT_CONFIG:-$HOME/.config/agent-tracker/agent-config.json}"
+}
+
+config_example_path() {
+  printf '%s' "${HAT_AGENT_CONFIG_EXAMPLE:-$SCRIPT_ROOT/agent-tracker/agent-config.example.json}"
+}
+
+config_lock_dir() {
+  printf '%s' "$(dirname "$(config_path)")/.config.lock.d"
+}
+
+_lock_mtime() {
+  # Epoch seconds of a path's mtime, digits only. GNU stat first (-c is cleanly
+  # rejected by BSD stat, so the fallback fires); BSD stat second (macOS system
+  # /usr/bin/stat). Note -f can NOT lead: GNU stat treats -f as "filesystem
+  # status" and SUCCEEDS with wrong output, defeating an exit-code fallback.
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)"
+  printf '%s' "${m//[!0-9]/}"
+}
+
+_lock_is_stale() {
+  local dir="$1" mtime now
+  mtime="$(_lock_mtime "$dir")"
+  [ -n "$mtime" ] || return 1
+  now="$(date +%s)"
+  [ "$((now - mtime))" -gt "$CONFIG_LOCK_STALE" ]
+}
+
+config_acquire_lock() {
+  local dir; dir="$(config_lock_dir)"
+  mkdir -p "$(dirname "$dir")" 2>/dev/null
+  while true; do
+    if mkdir "$dir" 2>/dev/null; then
+      return 0
+    fi
+    # mkdir failed but the lock dir does NOT exist ⇒ not an existence race
+    # (parent unwritable / read-only FS / EACCES). Fail fast, do NOT spin —
+    # mirrors the Go reference's `else if !os.IsExist(err) { return nil, err }`.
+    if [ ! -d "$dir" ]; then
+      say "$(msg config_lock_fail)$dir"
+      return 1
+    fi
+    if _lock_is_stale "$dir"; then
+      rm -rf "$dir" 2>/dev/null   # preempt an abandoned lock (holder crashed)
+      continue
+    fi
+    sleep 0.03
+  done
+}
+
+config_release_lock() {
+  rmdir "$(config_lock_dir)" 2>/dev/null || rm -rf "$(config_lock_dir)" 2>/dev/null || true
+}
+
+# config_set_field <key> <string-value>
+# Under the cross-process lock: seed from the example on first run (design C0),
+# jq-merge the new field PRESERVING unknown keys, write to a temp in the same
+# dir, then atomic mv. Returns nonzero (without writing) if jq is unavailable.
+config_set_field() {
+  local field="$1" value="$2" path tmp
+  path="$(config_path)"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    return 1
+  fi
+
+  config_acquire_lock || return 1
+
+  if [ ! -f "$path" ]; then
+    mkdir -p "$(dirname "$path")"
+    if [ -f "$(config_example_path)" ]; then
+      cp "$(config_example_path)" "$path"
+    else
+      printf '{}\n' > "$path"
+    fi
+  fi
+
+  tmp="$path.tmp.$$"
+  if jq --arg k "$field" --arg v "$value" '.[$k] = $v' "$path" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$path"
+    config_release_lock
+    return 0
+  fi
+  rm -f "$tmp"
+  config_release_lock
+  return 1
+}
+
+# config_set_field_json <key> <raw-json-value>
+# Same lock/seed/atomic-mv protocol as config_set_field, but the value is a raw
+# JSON literal (object/array/etc) via --argjson — not a string. Used to persist
+# statusline_chain (an object) into agent-config.json.
+config_set_field_json() {
+  local field="$1" value="$2" path tmp
+  path="$(config_path)"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    return 1
+  fi
+
+  config_acquire_lock || return 1
+
+  if [ ! -f "$path" ]; then
+    mkdir -p "$(dirname "$path")"
+    if [ -f "$(config_example_path)" ]; then
+      cp "$(config_example_path)" "$path"
+    else
+      printf '{}\n' > "$path"
+    fi
+  fi
+
+  tmp="$path.tmp.$$"
+  if jq --arg k "$field" --argjson v "$value" '.[$k] = $v' "$path" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$path"
+    config_release_lock
+    return 0
+  fi
+  rm -f "$tmp"
+  config_release_lock
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Flag state (empty = unset ⇒ fall through to a default at decision time).
+# ---------------------------------------------------------------------------
+FLAG_lang=""
+FLAG_icons=""
+FLAG_keymap=""
+FLAG_deps=""
+FLAG_tmux=""
+FLAG_daemon=""
+FLAG_ws_timer=""
+FLAG_stop_hook=""
+FLAG_statusline=""
+FLAG_alias=""
+
+JSON_MODE=0
+ASSUME_YES=0
+DRY_RUN=0
+EXPLICIT_NONINTERACTIVE=0
+EXPLICIT_INTERACTIVE=0
+NON_INTERACTIVE=0
+RUN_STATUS=complete
+
+# Resolved decisions.
+DEC_lang=""
+DEC_icons=""
+DEC_keymap=""
+DEC_deps=""
+DEC_tmux=""
+DEC_daemon=""
+DEC_ws_timer=""
+DEC_stop_hook=""
+DEC_statusline=""
+DEC_alias=""
+
+usage() {
+  cat >&2 <<EOF
+Usage:
+  scripts/setup [agent-guide] [options]
+
+Enum options (accept both --flag=value and --flag value):
+  --lang=zh|en
+  --icons=nerd|emoji|ascii
+  --keymap=default|compat|minimal
+  --deps=auto|check|skip
+  --tmux=install|skip
+  --daemon=install|skip
+  --ws-timer=install|skip
+  --stop-hook=install|skip
+  --statusline=install|chain|skip
+  --alias=install|skip
+
+Boolean options:
+  --non-interactive     force non-interactive (auto when stdin not a tty or \$CI set)
+  --interactive         force interactive (aborts if \$CI is set)
+  --json                emit JSONL to stdout, prose to stderr
+  --yes                 suppress interactive confirmation prompts (does NOT change defaults)
+  --dry-run             print the assembled deploy.sh command but do NOT execute it
+                        (also enabled by \$HAT_SETUP_DRYRUN)
+  --help, -h            show this help
+EOF
+}
+
+allowed_for() {
+  case "$1" in
+    lang) printf 'zh en' ;;
+    icons) printf 'nerd emoji ascii' ;;
+    keymap) printf 'default compat minimal' ;;
+    deps) printf 'auto check skip' ;;
+    tmux|daemon|ws-timer|stop-hook|alias) printf 'install skip' ;;
+    statusline) printf 'install chain skip' ;;
+    *) printf '' ;;
+  esac
+}
+
+validate_enum() {
+  local flag="$1" val="$2" allowed="$3" a
+  for a in $allowed; do
+    [ "$val" = "$a" ] && return 0
+  done
+  die "$(msg invalid_value): --$flag=$val ($(msg allowed): $allowed)"
+}
+
+# ---------------------------------------------------------------------------
+# Flag parsing — hand-rolled while/case. Supports --flag=value and --flag value.
+# ---------------------------------------------------------------------------
+parse_flags() {
+  local arg name value has_eq allowed safe
+  while [ $# -gt 0 ]; do
+    arg="$1"
+    has_eq=0
+    value=""
+    case "$arg" in
+      --*=*)
+        name="${arg%%=*}"; name="${name#--}"
+        value="${arg#*=}"; has_eq=1
+        ;;
+      --*)
+        name="${arg#--}"
+        ;;
+      -h)
+        usage; exit 0
+        ;;
+      *)
+        die "$(msg invalid_flag): $arg"
+        ;;
+    esac
+
+    # Boolean flags take no value — reject a stray `--flag=value` rather than
+    # silently ignoring it (e.g. `--json=false` must not quietly enable JSON).
+    case "$name" in
+      non-interactive|interactive|json|yes|dry-run)
+        [ "$has_eq" -eq 0 ] || die "$(msg flag_no_value): --$name" ;;
+    esac
+
+    case "$name" in
+      non-interactive) EXPLICIT_NONINTERACTIVE=1; shift; continue ;;
+      interactive) EXPLICIT_INTERACTIVE=1; shift; continue ;;
+      json) JSON_MODE=1; shift; continue ;;
+      yes) ASSUME_YES=1; shift; continue ;;
+      dry-run) DRY_RUN=1; shift; continue ;;
+      help|h) usage; exit 0 ;;
+      lang|icons|keymap|deps|tmux|daemon|ws-timer|stop-hook|statusline|alias)
+        if [ "$has_eq" -eq 0 ]; then
+          shift
+          [ $# -gt 0 ] || die "$(msg missing_value): --$name"
+          value="$1"
+        fi
+        allowed="$(allowed_for "$name")"
+        validate_enum "$name" "$value" "$allowed"
+        safe="$(printf '%s' "$name" | tr '-' '_')"
+        printf -v "FLAG_$safe" '%s' "$value"
+        [ "$name" = "lang" ] && LANG_SEL="$value"
+        shift; continue
+        ;;
+      *)
+        die "$(msg invalid_flag): --$name"
+        ;;
+    esac
+  done
+}
+
+resolve_interactivity() {
+  if [ -n "${CI:-}" ] && [ "$EXPLICIT_INTERACTIVE" -eq 1 ]; then
+    die "$(msg ci_interactive_abort)"
+  fi
+  if [ "$EXPLICIT_NONINTERACTIVE" -eq 1 ] && [ "$EXPLICIT_INTERACTIVE" -eq 1 ]; then
+    say "$(msg both_modes_warn)"
+  fi
+  if [ "$EXPLICIT_NONINTERACTIVE" -eq 1 ]; then
+    NON_INTERACTIVE=1
+  elif [ "$EXPLICIT_INTERACTIVE" -eq 1 ]; then
+    NON_INTERACTIVE=0
+  elif [ ! -t 0 ] || [ -n "${CI:-}" ]; then
+    NON_INTERACTIVE=1
+  else
+    NON_INTERACTIVE=0
+  fi
+}
+
+prompt_yn() {
+  # prompt_yn <msg-key> ; default = Yes. Returns 0 (yes) / 1 (no).
+  local key="$1" ans
+  printf '%s [Y/n] ' "$(msg "$key")" >&2
+  read -r ans
+  case "$ans" in
+    n|N|no|NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+language_first_screen() {
+  # Explicit --lang wins; skip the switch prompt.
+  [ -n "$FLAG_lang" ] && return 0
+  printf '%s\n' "$(msg lang_choose)" >&2
+  local ans
+  read -r ans
+  case "$ans" in
+    1) LANG_SEL=zh ;;
+    2) LANG_SEL=en ;;
+    *) : ;;
+  esac
+}
+
+icon_heuristic() {
+  # Non-interactive icon default: TERM_PROGRAM heuristic.
+  case "${TERM_PROGRAM:-}" in
+    ghostty|Ghostty) printf 'nerd' ;;
+    *) printf 'emoji' ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Decision resolution layer — one decide_* per decision point.
+# These ONLY resolve the chosen value into DEC_*; they do NOT execute the
+# underlying action (deps/icon/keymap = Tasks 6/7; deploy assembly = Task 8).
+# ---------------------------------------------------------------------------
+decide_language() {
+  DEC_lang="$LANG_SEL"
+}
+
+decide_icons() {
+  if [ -n "$FLAG_icons" ]; then DEC_icons="$FLAG_icons"; return 0; fi
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then
+    DEC_icons="$(icon_heuristic)"
+  else
+    # TODO(Task 6): interactive visual self-test to pick the icon set.
+    # Skeleton falls back to the same heuristic as non-interactive.
+    DEC_icons="$(icon_heuristic)"
+  fi
+}
+
+keymap_choose_preset() {
+  # Interactive layer-1 of the 3-layer keymap wizard: pick a preset. The
+  # per-binding conflict wizard for non-default presets runs later in
+  # keymap_module(). Unrecognized input falls back to the safe `default`.
+  printf '%s\n' "$(msg km_choose)" >&2
+  local ans
+  read -r ans
+  case "$ans" in
+    2) printf 'compat' ;;
+    3) printf 'minimal' ;;
+    *) printf 'default' ;;
+  esac
+}
+
+decide_keymap() {
+  if [ -n "$FLAG_keymap" ]; then DEC_keymap="$FLAG_keymap"; return 0; fi
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then DEC_keymap="default"; return 0; fi
+  # Interactive default (design C1): drive the 3-layer keymap wizard, starting
+  # with the preset choice. Non-interactive stays conservative (no override).
+  DEC_keymap="$(keymap_choose_preset)"
+}
+
+decide_deps() {
+  if [ -n "$FLAG_deps" ]; then DEC_deps="$FLAG_deps"; return 0; fi
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then
+    DEC_deps="check"
+  else
+    # TODO(Task 6): deps module — interactive default is
+    # disclose-then-one-consent = auto.
+    DEC_deps="auto"
+  fi
+}
+
+decide_install_skip() {
+  # decide_install_skip <flag-value> <msg-key> -> echoes resolved value.
+  local flagval="$1" key="$2"
+  if [ -n "$flagval" ]; then printf '%s' "$flagval"; return 0; fi
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then printf 'skip'; return 0; fi
+  # Interactive default = install.
+  if [ "$ASSUME_YES" -eq 1 ]; then printf 'install'; return 0; fi
+  if prompt_yn "$key"; then printf 'install'; else printf 'skip'; fi
+}
+
+decide_tmux()      { DEC_tmux="$(decide_install_skip "$FLAG_tmux" tmux)"; }
+decide_daemon()    { DEC_daemon="$(decide_install_skip "$FLAG_daemon" daemon)"; }
+decide_ws_timer()  { DEC_ws_timer="$(decide_install_skip "$FLAG_ws_timer" ws_timer)"; }
+decide_stop_hook() { DEC_stop_hook="$(decide_install_skip "$FLAG_stop_hook" stop_hook)"; }
+decide_alias()     { DEC_alias="$(decide_install_skip "$FLAG_alias" alias)"; }
+
+decide_statusline() {
+  if [ -n "$FLAG_statusline" ]; then DEC_statusline="$FLAG_statusline"; return 0; fi
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then DEC_statusline="skip"; return 0; fi
+  # Interactive (design C1): probe the current settings.json .statusLine and let
+  # the detected state drive the recommendation — absent => install, already ours
+  # => skip (idempotent), something else => chain (wrap the user's statusLine).
+  local rec; rec="$(statusline_detect)"
+  case "$rec" in
+    skip)
+      say "$(msg statusline_already)"
+      DEC_statusline="skip"
+      ;;
+    chain)
+      say "$(msg statusline_found_other)"
+      if [ "$ASSUME_YES" -eq 1 ]; then DEC_statusline="chain"; return 0; fi
+      if prompt_yn statusline_chain_q; then DEC_statusline="chain"; else DEC_statusline="skip"; fi
+      ;;
+    *)
+      if [ "$ASSUME_YES" -eq 1 ]; then DEC_statusline="install"; return 0; fi
+      if prompt_yn statusline; then DEC_statusline="install"; else DEC_statusline="skip"; fi
+      ;;
+  esac
+}
+
+resolve_all_decisions() {
+  decide_language
+  decide_icons
+  decide_keymap
+  decide_deps
+  decide_tmux
+  decide_daemon
+  decide_ws_timer
+  decide_stop_hook
+  decide_statusline
+  decide_alias
+}
+
+emit_all_decisions() {
+  emit_decision language "$DEC_lang"
+  emit_decision icons "$DEC_icons"
+  emit_decision keymap "$DEC_keymap"
+  emit_decision deps "$DEC_deps"
+  emit_decision tmux "$DEC_tmux"
+  emit_decision daemon "$DEC_daemon"
+  emit_decision ws-timer "$DEC_ws_timer"
+  emit_decision stop-hook "$DEC_stop_hook"
+  emit_decision statusline "$DEC_statusline"
+  emit_decision alias "$DEC_alias"
+}
+
+print_summary() {
+  # Human decision summary (non-json mode) → stdout.
+  printf '%s\n' "$(msg summary_header)"
+  printf '  language:    %s\n' "$DEC_lang"
+  printf '  icons:       %s\n' "$DEC_icons"
+  printf '  keymap:      %s\n' "$DEC_keymap"
+  printf '  deps:        %s\n' "$DEC_deps"
+  printf '  tmux:        %s\n' "$DEC_tmux"
+  printf '  daemon:      %s\n' "$DEC_daemon"
+  printf '  ws-timer:    %s\n' "$DEC_ws_timer"
+  printf '  stop-hook:   %s\n' "$DEC_stop_hook"
+  printf '  statusline:  %s\n' "$DEC_statusline"
+  printf '  alias:       %s\n' "$DEC_alias"
+}
+
+# ---------------------------------------------------------------------------
+# Deps module (plan Task 6).
+#
+# BASH 3.2: no associative arrays. The dependency table is expressed as PARALLEL
+# arrays indexed by the same position. required deps hard-gate the run (unless
+# --deps=auto self-heals); optional deps only produce a degradation note.
+# ---------------------------------------------------------------------------
+DEP_names=(tmux go fzf jq z lazygit terminal-notifier gh)
+DEP_types=(required required required required optional optional optional optional)
+DEP_cmds=(tmux go fzf jq z lazygit terminal-notifier gh)
+DEP_brews=(tmux go fzf jq z lazygit terminal-notifier gh)
+DEP_minver=(3.3 "" "" "" "" "" "" "")
+DEP_notes=(\
+  'tmux status bar + agent window layout' \
+  'agent-tracker daemon build' \
+  'fuzzy pickers (prefix [, tmux-resume)' \
+  'JSON config merge + --json output' \
+  'directory-history jump (prefix [)' \
+  'git TUI pane' \
+  'desktop notifications (bell fallback if absent)' \
+  'GitHub CLI helpers')
+
+# Version compare state + missing accounting (reset by deps_scan).
+DETECTED_VER=""
+MISSING_REQUIRED=0
+MISSING_INSTALL_NAMES=""
+MISSING_INSTALL_BREWS=""
+
+ver_clean() {
+  # Strip everything but digits and dots: "tmux 3.3a" -> "3.3", "next-3.4" -> "3.4".
+  local v="$1"
+  v="${v//[!0-9.]/}"
+  printf '%s' "$v"
+}
+
+version_ge() {
+  # 0 if $1 >= $2 comparing major.minor (10# forces base-10, avoids octal traps).
+  local d="$1" r="$2" dmaj dmin rmaj rmin
+  dmaj="${d%%.*}"
+  case "$d" in *.*) dmin="${d#*.}"; dmin="${dmin%%.*}" ;; *) dmin=0 ;; esac
+  rmaj="${r%%.*}"
+  case "$r" in *.*) rmin="${r#*.}"; rmin="${rmin%%.*}" ;; *) rmin=0 ;; esac
+  dmaj=$((10#${dmaj:-0})); dmin=$((10#${dmin:-0}))
+  rmaj=$((10#${rmaj:-0})); rmin=$((10#${rmin:-0}))
+  if [ "$dmaj" -gt "$rmaj" ]; then return 0; fi
+  if [ "$dmaj" -lt "$rmaj" ]; then return 1; fi
+  [ "$dmin" -ge "$rmin" ]
+}
+
+dep_present() {
+  # $1 = index. Sets DETECTED_VER (version for tmux, else "present"). Returns
+  # 0 when the detect command is on PATH, 1 otherwise.
+  local i="$1"
+  local cmd="${DEP_cmds[$i]}" raw
+  DETECTED_VER=""
+  command -v "$cmd" >/dev/null 2>&1 || return 1
+  if [ "$cmd" = "tmux" ]; then
+    raw="$(tmux -V 2>/dev/null)"
+    DETECTED_VER="$(ver_clean "$raw")"
+  else
+    DETECTED_VER="present"
+  fi
+  return 0
+}
+
+deps_emit_all_skip() {
+  local i=0 n="${#DEP_names[@]}"
+  while [ "$i" -lt "$n" ]; do
+    emit "dep:${DEP_names[$i]}" skip \
+      "$(jq -cn --arg name "${DEP_names[$i]}" --arg type "${DEP_types[$i]}" \
+        '{name:$name,type:$type,detected:"",required:"",skipped:true}')"
+    i=$((i + 1))
+  done
+}
+
+# deps_scan <quiet:0|1>
+# Detect every dep, populate MISSING_* accounting. When not quiet, also print
+# a human table to STDERR and emit one JSONL object per dep.
+deps_scan() {
+  local quiet="$1" i=0 n="${#DEP_names[@]}"
+  local name type minver brew detected required status ok note
+
+  MISSING_REQUIRED=0
+  MISSING_INSTALL_NAMES=""
+  MISSING_INSTALL_BREWS=""
+
+  [ "$quiet" -eq 1 ] || {
+    say "$(msg deps_header)"
+    printf '  %-18s %-9s %-10s %-9s %s\n' dep type detected required status >&2
+  }
+
+  while [ "$i" -lt "$n" ]; do
+    name="${DEP_names[$i]}"; type="${DEP_types[$i]}"
+    minver="${DEP_minver[$i]}"; brew="${DEP_brews[$i]}"; note="${DEP_notes[$i]}"
+    required="-"; [ -n "$minver" ] && required=">=$minver"
+    ok=0
+
+    if dep_present "$i"; then
+      detected="$DETECTED_VER"
+      if [ -n "$minver" ] && ! version_ge "$DETECTED_VER" "$minver"; then
+        ok=0            # present but too old ⇒ treat as unsatisfied
+      else
+        ok=1
+      fi
+    else
+      detected="-"
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+      status=ok
+    elif [ "$type" = required ]; then
+      status=fail
+      MISSING_REQUIRED=$((MISSING_REQUIRED + 1))
+      MISSING_INSTALL_NAMES="$MISSING_INSTALL_NAMES $name"
+      MISSING_INSTALL_BREWS="$MISSING_INSTALL_BREWS $brew"
+    else
+      status=degraded
+      MISSING_INSTALL_NAMES="$MISSING_INSTALL_NAMES $name"
+      MISSING_INSTALL_BREWS="$MISSING_INSTALL_BREWS $brew"
+    fi
+
+    [ "$quiet" -eq 1 ] || {
+      printf '  %-18s %-9s %-10s %-9s %s\n' \
+        "$name" "$type" "$detected" "$required" "$status" >&2
+      # Build the jq detail ONLY in json mode — otherwise a box without jq (the
+      # very case where jq is the missing dep) would spew `jq: command not found`
+      # into the human table above.
+      [ "$JSON_MODE" -eq 1 ] && emit "dep:$name" "$status" \
+        "$(jq -cn --arg name "$name" --arg type "$type" \
+          --arg detected "$detected" --arg required "$required" --arg note "$note" \
+          '{name:$name,type:$type,detected:$detected,required:$required,note:$note}')"
+    }
+    i=$((i + 1))
+  done
+}
+
+deps_auto() {
+  # Self-heal missing deps via one disclosed batch install. Never per-dep prompt.
+  if [ -z "${MISSING_INSTALL_BREWS// /}" ]; then
+    say "$(msg deps_nothing)"
+    return 0
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    say "$(msg deps_auto_disclose)$MISSING_INSTALL_NAMES"
+    if [ "$NON_INTERACTIVE" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+      if ! prompt_yn deps_auto_confirm; then
+        say "$(msg deps_auto_declined)"
+        RUN_STATUS=degraded
+        return 0
+      fi
+    fi
+    say "$(msg deps_installing)$MISSING_INSTALL_BREWS"
+    # Intentional word-splitting: each package must be a separate brew argument.
+    # shellcheck disable=SC2086
+    brew install $MISSING_INSTALL_BREWS
+    deps_scan 1   # re-scan silently to reflect the post-install state
+    return 0
+  fi
+
+  # No Homebrew: disclose manual commands and continue, but degrade.
+  say "$(msg deps_no_brew)"
+  say '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+  say "$(msg deps_manual_then)"
+  local b
+  for b in $MISSING_INSTALL_BREWS; do
+    say "  brew install $b"
+  done
+  RUN_STATUS=degraded
+}
+
+deps_module() {
+  if [ "$DEC_deps" = skip ]; then
+    [ "$JSON_MODE" -eq 1 ] && deps_emit_all_skip
+    say "$(msg deps_skipped)"
+    return 0
+  fi
+
+  deps_scan 0
+
+  if [ "$DEC_deps" = auto ]; then
+    deps_auto
+    [ "$MISSING_REQUIRED" -gt 0 ] && RUN_STATUS=degraded
+    return 0
+  fi
+
+  # --deps=check : required missing hard-gates the run.
+  if [ "$MISSING_REQUIRED" -gt 0 ]; then
+    say "$(msg deps_required_missing)"
+    RUN_STATUS=degraded
+    [ "$JSON_MODE" -eq 1 ] && emit_result
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Icon self-test module (plan Task 6 + design C1/C0).
+# ---------------------------------------------------------------------------
+# icon_selftest finalizes DEC_icons via the interactive visual self-test (only
+# when no explicit --icons was given; the non-interactive value is already
+# resolved by decide_icons). It runs BEFORE emit_all_decisions so the single
+# canonical `icons` decision event carries the value actually persisted — there
+# is no separate `icon` event (that would double-report and isn't in the
+# agent-guide decision_points contract).
+icon_selftest() {
+  [ "$NON_INTERACTIVE" -eq 0 ] && [ -z "$FLAG_icons" ] || return 0
+  say "$(msg icon_header)"
+  say "$(msg icon_row_nerd) "                 # nerd chip glyph (CPU icon)
+  say "$(msg icon_row_emoji) 🖥"
+  say "$(msg icon_row_ascii) CPU"
+  if prompt_yn icon_q1; then
+    DEC_icons=nerd
+  elif prompt_yn icon_q2; then
+    DEC_icons=emoji
+  else
+    DEC_icons=ascii
+  fi
+}
+
+# icon_apply persists the resolved icon set into agent-config.json under the
+# cross-process config lock (seeding from the example on first run).
+icon_apply() {
+  if config_set_field icon_set "$DEC_icons"; then
+    say "$(msg icon_written)$DEC_icons"
+  else
+    say "$(msg icon_nojq)"
+    RUN_STATUS=degraded
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Keymap module (plan Task 7 + design C1).
+#
+# Three layers: preset (default/compat/minimal) -> conflict scan against the
+# user's existing ~/.tmux.conf -> per-binding wizard -> generate a template-only
+# private/keymap.conf overlay -> sandbox trial-load (random socket, trap-cleaned).
+#
+# BASH 3.2: the core binding table is PARALLEL arrays indexed by position:
+#   KM_ids   stable identifier
+#   KM_keys  default key
+#   KM_flags "" (prefix table) | "-n" (root table)
+#   KM_desc  i18n message key for the human description
+#   KM_cmds  the FAITHFUL tmux command template (transcribed from tmux.conf)
+#
+# INJECTION DEFENSE (R2-I8): a user-entered key MUST pass keymap_valid_key()'s
+# grammar whitelist (excludes ; and \ etc). The `bind` line is ALWAYS produced by
+# the template generator — a raw key is NEVER concatenated into a tmux command.
+# ---------------------------------------------------------------------------
+KM_ids=()
+KM_keys=()
+KM_flags=()
+KM_desc=()
+KM_cmds=()
+
+# Remap accumulator (parallel): id, mode (rebind|unbind), new key.
+RM_ids=()
+RM_mode=()
+RM_new=()
+
+# Occupied-key set (newline "table:key"), used-suggestion set, trial error.
+KM_OCCUPIED=""
+KM_USED=""
+KM_TRIAL_ERR=""
+
+# Reserved replacement pool: grammar-valid keys unlikely to clash.
+KM_POOL=(M-a M-e M-g M-n M-p M-y M-z M-b M-f M-q M-r M-v C-y C-p C-o)
+
+# Grammar whitelist — MUST stay byte-identical to design C1 / plan Task 7.
+# Excludes `;` (tmux command separator) and `\` (escape) by construction.
+KM_GRAMMAR='^([A-Za-z0-9]|C-[a-z0-9]|M-[A-Za-z0-9]|S-[A-Za-z]|F[1-9][0-9]?|Enter|Space|Tab|Escape|[][|,.<>/-])$'
+
+# Fixed mount marker (byte-matched for idempotency).
+KM_MOUNT_MARKER='# private overlay keymap（不存在时静默跳过）'
+
+keymap_conf_path() {
+  printf '%s' "${HAT_KEYMAP_CONF:-$SCRIPT_ROOT/private/keymap.conf}"
+}
+
+keymap_tmux_conf_path() {
+  printf '%s' "${HAT_TMUX_CONF:-$SCRIPT_ROOT/tmux/tmux.conf}"
+}
+
+keymap_build_table() {
+  # Idempotent: only build once.
+  [ "${#KM_ids[@]}" -gt 0 ] && return 0
+  KM_ids=(new_here new_pick timer todos winnav ws_save ws_restore ws_choose \
+          palette passthrough inner_prefix pane_left pane_down pane_up pane_right)
+  KM_keys=(']' '[' t T w s r g M-s F12 C-q M-h M-j M-k M-l)
+  KM_flags=('' '' '' '' '' '' '' '' -n -n -n -n -n -n -n)
+  KM_desc=(km_d_new_here km_d_new_pick km_d_timer km_d_todos km_d_winnav \
+           km_d_ws_save km_d_ws_restore km_d_ws_choose km_d_palette \
+           km_d_passthrough km_d_inner_prefix km_d_pane_left km_d_pane_down \
+           km_d_pane_up km_d_pane_right)
+  KM_cmds=(
+    "run-shell -b \"~/.hat-config/tmux/scripts/new_agent_window_prompt.sh here '#{pane_current_path}'\""
+    "display-popup -E -w 80 -h 16 -d \"#{pane_current_path}\" \"~/.hat-config/tmux/scripts/new_agent_window_prompt.sh ask '#{pane_current_path}'\""
+    "run-shell \"~/.hat-config/tmux/scripts/open_window_timer.sh '#{window_id}' '#{pane_current_path}' '#{session_name}'\""
+    "run-shell \"~/.hat-config/tmux/scripts/open_agent_palette.sh '#{client_tty}' '#{window_id}' '#{@agent_id}' '#{pane_current_path}' '#{session_name}' '#{window_name}' 'todos'\""
+    "run-shell \"~/.hat-config/tmux/scripts/open_window_nav.sh '#{window_id}' '#{pane_current_path}' '#{session_name}'\""
+    "run-shell -b \"~/.hat-config/tmux/scripts/save_workspace.sh\""
+    "run-shell -b \"~/.hat-config/tmux/scripts/restore_workspace.sh\""
+    "display-popup -E -w 80% -h 70% \"~/.hat-config/tmux/scripts/choose_workspace.sh\""
+    "run-shell \"~/.hat-config/tmux/scripts/open_agent_palette.sh '#{client_tty}' '#{window_id}' '#{@agent_id}' '#{pane_current_path}' '#{session_name}' '#{window_name}'\""
+    "set key-table off \\; set status-style 'bg=colour202,fg=colour16,bold' \\; set window-status-current-format '#[bg=colour202,fg=colour16,bold] ⌨ PASSTHROUGH #[default]' \\; refresh-client -S"
+    "send-keys C-b"
+    "select-pane -L"
+    "select-pane -D"
+    "select-pane -U"
+    "select-pane -R"
+  )
+  # Session-index switchers (C-1..9 and F1..9), same command template.
+  local i=1
+  while [ "$i" -le 9 ]; do
+    KM_ids+=("sess_c$i");  KM_keys+=("C-$i"); KM_flags+=(-n); KM_desc+=(km_d_session)
+    KM_cmds+=("run-shell -b \"~/.hat-config/tmux/scripts/switch_session_by_index.sh $i\"")
+    i=$((i + 1))
+  done
+  i=1
+  while [ "$i" -le 9 ]; do
+    KM_ids+=("sess_f$i");  KM_keys+=("F$i"); KM_flags+=(-n); KM_desc+=(km_d_session)
+    KM_cmds+=("run-shell -b \"~/.hat-config/tmux/scripts/switch_session_by_index.sh $i\"")
+    i=$((i + 1))
+  done
+}
+
+keymap_index_of() {
+  local target="$1" i=0 n="${#KM_ids[@]}"
+  while [ "$i" -lt "$n" ]; do
+    [ "${KM_ids[$i]}" = "$target" ] && { printf '%s' "$i"; return 0; }
+    i=$((i + 1))
+  done
+  return 1
+}
+
+keymap_valid_key() {
+  # INJECTION DEFENSE: whole-string ERE match. `[[ =~ ]]` anchors ^...$ to the
+  # WHOLE string (not per line), so an embedded newline can never sneak a valid
+  # token past the check the way grep -q would.
+  [[ "$1" =~ $KM_GRAMMAR ]]
+}
+
+keymap_set_remap() {
+  # Upsert (id already present => replace) so preset + wizard never duplicate.
+  local id="$1" mode="$2" newkey="$3" i=0 n="${#RM_ids[@]}"
+  while [ "$i" -lt "$n" ]; do
+    if [ "${RM_ids[$i]}" = "$id" ]; then
+      RM_mode[$i]="$mode"; RM_new[$i]="$newkey"; return 0
+    fi
+    i=$((i + 1))
+  done
+  RM_ids+=("$id"); RM_mode+=("$mode"); RM_new+=("$newkey")
+}
+
+keymap_mark_used() { KM_USED="$KM_USED $1"; }
+
+keymap_key_free() {
+  # Free = not occupied in EITHER table and not already handed out as a suggestion.
+  local k="$1"
+  if [ -n "$KM_OCCUPIED" ]; then
+    grep -Fxq "root:$k" <<<"$KM_OCCUPIED" && return 1
+    grep -Fxq "prefix:$k" <<<"$KM_OCCUPIED" && return 1
+  fi
+  case " $KM_USED " in *" $k "*) return 1 ;; esac
+  return 0
+}
+
+keymap_suggest() {
+  # First from the reserved pool, then widen to M-<a..z>/C-<a..z> so we never
+  # hand out a colliding key even when the pool is exhausted.
+  local p c
+  for p in "${KM_POOL[@]}"; do
+    keymap_key_free "$p" && { printf '%s' "$p"; return 0; }
+  done
+  for c in a b c d e f g h i j k l m n o p q r s t u v w x y z; do
+    keymap_key_free "M-$c" && { printf '%s' "M-$c"; return 0; }
+    keymap_key_free "C-$c" && { printf '%s' "C-$c"; return 0; }
+  done
+  printf '%s' "${KM_POOL[0]}"
+}
+
+keymap_seed_compat() {
+  # Predefined clash-avoidance remaps (design allows tuning; documented in file).
+  # Only the root-table entry key is moved; the paired `-T off` companion of F12
+  # is out of scope for this preset.
+  keymap_set_remap passthrough rebind F10; keymap_mark_used F10
+  keymap_set_remap palette     rebind M-a; keymap_mark_used M-a
+}
+
+keymap_seed_minimal() {
+  # Keep only the M-s palette entry; unbind every other core key.
+  local i=0 n="${#KM_ids[@]}"
+  while [ "$i" -lt "$n" ]; do
+    [ "${KM_ids[$i]}" = palette ] || keymap_set_remap "${KM_ids[$i]}" unbind ""
+    i=$((i + 1))
+  done
+}
+
+keymap_parse_listkeys() {
+  # `list-keys` line: bind-key [-flags] -T <table> <key> <command...>
+  awk '$1=="bind-key"{for(i=2;i<=NF;i++){if($i=="-T"){print $(i+1)":"$(i+2);break}}}'
+}
+
+keymap_parse_grep() {
+  # Static `bind`-line fallback: bind [-n|-T <t>|-r ...] <key> <command...>
+  awk '{
+    tbl="prefix"; i=2;
+    while(i<=NF){
+      if($i=="-n"){tbl="root"; i++; continue}
+      if($i=="-T"){tbl=$(i+1); i+=2; continue}
+      if(substr($i,1,1)=="-"){i++; continue}
+      break
+    }
+    if(i<=NF) print tbl":"$i
+  }'
+}
+
+keymap_grep_explicit() {
+  # "table:key" for every binding LITERALLY written in the conf (catches a
+  # user rebind even when it duplicates a tmux default).
+  local conf="$1"
+  keymap_parse_grep <<<"$(grep -E '^[[:space:]]*bind' "$conf" 2>/dev/null)"
+}
+
+keymap_scan_occupied() {
+  # Emit "table:key" per USER-configured binding on stdout. Return 2 => skip
+  # (no readable conf / missing / broken symlink). Prefer an ISOLATED tmux
+  # server that loads the user's conf and reports parsed bindings (catches
+  # plugin/sourced bindings static grep misses); subtract the tmux DEFAULT
+  # baseline so built-ins aren't reported as conflicts, then UNION the
+  # explicitly-written keys (so an explicit rebind of a default key still shows).
+  # Fall back to static grep when tmux is unavailable or the conf fails to load.
+  local conf="$HOME/.tmux.conf" sock bsock user base added explicit
+  [ -e "$conf" ] || return 2      # -e follows symlinks: broken symlink => skip
+  [ -r "$conf" ] || return 2
+
+  explicit="$(keymap_grep_explicit "$conf" | sort -u)"
+
+  if command -v tmux >/dev/null 2>&1; then
+    sock="hatscan-$$"; bsock="hatbase-$$"
+    if user="$(tmux -f "$conf" -L "$sock" start-server \; list-keys 2>/dev/null)"; then
+      tmux -L "$sock" kill-server 2>/dev/null
+      base="$(tmux -f /dev/null -L "$bsock" start-server \; list-keys 2>/dev/null)"
+      tmux -L "$bsock" kill-server 2>/dev/null
+      added="$(comm -23 \
+        <(keymap_parse_listkeys <<<"$user" | sort -u) \
+        <(keymap_parse_listkeys <<<"$base" | sort -u))"
+      printf '%s\n%s\n' "$added" "$explicit" | grep -v '^$' | sort -u
+      return 0
+    fi
+    tmux -L "$sock" kill-server 2>/dev/null
+  fi
+  printf '%s\n' "$explicit" | grep -v '^$'
+  return 0
+}
+
+keymap_emit_binding() {
+  # keymap_emit_binding <mode> <oldkey> <flags> <newkey> <cmd>
+  # Template generator: fixed printf format; the newkey has already passed the
+  # grammar whitelist, so it can never break out of the bind line.
+  local mode="$1" oldkey="$2" flags="$3" newkey="$4" cmd="$5" fl=""
+  [ -n "$flags" ] && fl="$flags "
+  printf 'unbind -q %s%s\n' "$fl" "$oldkey"
+  [ "$mode" = rebind ] && printf 'bind %s%s %s\n' "$fl" "$newkey" "$cmd"
+}
+
+keymap_render() {
+  printf '# hat-config keymap override — generated by scripts/setup\n'
+  printf '# 删除本文件并 re-deploy 即恢复默认键位 / delete this file and re-deploy to restore defaults.\n'
+  printf '# preset: %s\n\n' "$DEC_keymap"
+  local i=0 n="${#RM_ids[@]}" idx
+  while [ "$i" -lt "$n" ]; do
+    if idx="$(keymap_index_of "${RM_ids[$i]}")"; then
+      keymap_emit_binding "${RM_mode[$i]}" "${KM_keys[$idx]}" "${KM_flags[$idx]}" \
+        "${RM_new[$i]}" "${KM_cmds[$idx]}"
+    fi
+    i=$((i + 1))
+  done
+}
+
+keymap_generate() {
+  keymap_render > "$1" 2>/dev/null
+}
+
+keymap_ensure_mount() {
+  # Idempotent: append the source-line block only when the marker is absent.
+  local conf="${1:-$(keymap_tmux_conf_path)}"
+  [ -f "$conf" ] || return 0
+  grep -Fq "$KM_MOUNT_MARKER" "$conf" 2>/dev/null && return 0
+  {
+    printf '\n%s\n' "$KM_MOUNT_MARKER"
+    printf 'source -q ~/.hat-config/private/keymap.conf\n'
+  } >> "$conf"
+}
+
+keymap_trial_load() {
+  # Random socket + detached session + trap-cleaned kill-server. Loads the FULL
+  # tmux.conf together with the generated overlay and captures any error.
+  local conf="$1" sock err rc
+  command -v tmux >/dev/null 2>&1 || { KM_TRIAL_ERR="tmux not found"; return 0; }
+  sock="hatchk-$$-$RANDOM"
+  trap 'tmux -L "'"$sock"'" kill-server 2>/dev/null' RETURN
+  tmux -L "$sock" new-session -d -x 80 -y 24 2>/dev/null
+  err="$(tmux -L "$sock" source-file "$(keymap_tmux_conf_path)" \; source-file "$conf" 2>&1)"
+  rc=$?
+  tmux -L "$sock" kill-server 2>/dev/null
+  trap - RETURN
+  KM_TRIAL_ERR="$err"
+  { [ "$rc" -eq 0 ] && [ -z "$err" ]; }
+}
+
+keymap_wizard_one() {
+  # keymap_wizard_one <id> <kind:conflict|optional>
+  #  conflict => empty input accepts the suggested (free) replacement.
+  #  optional => empty input KEEPS the current key (no remap recorded).
+  local id="$1" kind="$2" idx cur sug ans hint
+  idx="$(keymap_index_of "$id")" || return 0
+  cur="${KM_keys[$idx]}"
+  say "  $(msg "${KM_desc[$idx]}")  ($(msg km_current): $cur)"
+  if [ "$kind" = conflict ]; then
+    sug="$(keymap_suggest)"; hint="$(msg km_suggest): $sug"
+  else
+    sug=""; hint="$(msg km_current): $cur"
+  fi
+  while true; do
+    printf '%s [%s] ' "$(msg km_prompt_key)" "$hint" >&2
+    read -r ans
+    if [ -z "$ans" ]; then
+      if [ "$kind" = conflict ]; then ans="$sug"; else return 0; fi
+    fi
+    if keymap_valid_key "$ans"; then
+      keymap_set_remap "$id" rebind "$ans"
+      keymap_mark_used "$ans"
+      return 0
+    fi
+    say "$(msg km_reject_key)"
+  done
+}
+
+keymap_emit() {
+  # keymap_emit <status> <preset> <written:true|false>
+  [ "$JSON_MODE" -eq 1 ] || return 0
+  emit "keymap:apply" "$1" \
+    "$(jq -cn --arg preset "$2" --argjson written "$3" '{preset:$preset,written:$written}')"
+}
+
+keymap_module() {
+  keymap_build_table
+
+  # One-time idempotent mount infrastructure — independent of whether an
+  # override is written (source -q silently skips a missing keymap.conf), so it
+  # must run BEFORE the default early-return.
+  keymap_ensure_mount
+
+  say "$(msg km_header)"
+
+  if [ "$DEC_keymap" = default ]; then
+    say "$(msg km_default_note)"
+    keymap_emit skip default false
+    return 0
+  fi
+
+  # Layer 1 — preset seeds the remap set.
+  RM_ids=(); RM_mode=(); RM_new=(); KM_USED=""
+  if [ "$DEC_keymap" = compat ]; then
+    say "$(msg km_preset_compat)"
+    keymap_seed_compat
+  else
+    say "$(msg km_preset_minimal)"
+    keymap_seed_minimal
+  fi
+
+  # Layer 2 — conflict scan against the user's existing ~/.tmux.conf.
+  local occ rc
+  occ="$(keymap_scan_occupied)"; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    say "$(msg km_scan_skip)"
+    KM_OCCUPIED=""
+  else
+    KM_OCCUPIED="$occ"
+  fi
+
+  local conflicts="" i=0 n="${#KM_ids[@]}" tbl spec
+  while [ "$i" -lt "$n" ]; do
+    tbl=prefix; [ -n "${KM_flags[$i]}" ] && tbl=root
+    spec="$tbl:${KM_keys[$i]}"
+    if [ -n "$KM_OCCUPIED" ] && grep -Fxq "$spec" <<<"$KM_OCCUPIED"; then
+      conflicts="$conflicts ${KM_ids[$i]}"
+    fi
+    i=$((i + 1))
+  done
+  if [ -n "${conflicts// /}" ]; then
+    say "$(msg km_scan_conflicts)$conflicts"
+  else
+    say "$(msg km_scan_none)"
+  fi
+
+  # Layer 3 — per-binding wizard (interactive only). Only conflicts, unless the
+  # user opts into adjusting the whole table.
+  if [ "$NON_INTERACTIVE" -eq 0 ]; then
+    local id
+    for id in $conflicts; do
+      keymap_wizard_one "$id" conflict
+    done
+    if prompt_yn km_adjust_all; then
+      i=0
+      while [ "$i" -lt "$n" ]; do
+        case " $conflicts " in
+          *" ${KM_ids[$i]} "*) : ;;
+          *) keymap_wizard_one "${KM_ids[$i]}" optional ;;
+        esac
+        i=$((i + 1))
+      done
+    fi
+  fi
+
+  if [ "${#RM_ids[@]}" -eq 0 ]; then
+    say "$(msg km_no_diff)"
+    keymap_emit ok "$DEC_keymap" false
+    return 0
+  fi
+
+  # Generate the overlay (.bak the previous one first), ensure the mount, then
+  # sandbox trial-load; roll back on failure.
+  local out; out="$(keymap_conf_path)"
+  mkdir -p "$(dirname "$out")" 2>/dev/null
+  [ -f "$out" ] && cp "$out" "$out.bak" 2>/dev/null
+  if ! keymap_generate "$out"; then
+    say "$(msg km_write_fail)"
+    RUN_STATUS=degraded
+    keymap_emit fail "$DEC_keymap" false
+    return 0
+  fi
+
+  if keymap_trial_load "$out"; then
+    say "$(msg km_written)$out"
+    say "$(msg km_trial_ok)"
+    keymap_emit ok "$DEC_keymap" true
+  else
+    if [ -f "$out.bak" ]; then mv -f "$out.bak" "$out"; else rm -f "$out"; fi
+    say "$(msg km_trial_fail)$KM_TRIAL_ERR"
+    RUN_STATUS=degraded
+    keymap_emit fail "$DEC_keymap" false
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# statusLine module (plan Task 8 + design C1/C4).
+#
+# setup only WRITES agent-config.json's statusline_chain; deploy.sh's
+# register_statusline (Task 4) reads it and is the ONLY editor of
+# settings.json.statusLine. Three resolved decisions:
+#   install => statusline_chain = {}            (no-chain marker → builtin render)
+#   chain   => statusline_chain = {command, original}  (wrap the user's statusLine)
+#   skip    => write nothing
+#
+# Design C4 (single writer): before chaining, if the user's statusLine script
+# still writes claude-rate-limits.json we would run two writers to the same
+# cache. Require removing the old writer (interactive confirm) before chaining;
+# a decline forces the decision back to skip and degrades.
+# ---------------------------------------------------------------------------
+claude_settings_path() {
+  printf '%s' "${HAT_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+}
+
+statusline_script_path() {
+  # This project's render command (what deploy.sh registers). Overridable so the
+  # sandbox tests can point detection at a fixture path.
+  printf '%s' "${HAT_STATUSLINE_SCRIPT:-$SCRIPT_ROOT/tmux/scripts/claude_statusline.sh}"
+}
+
+statusline_detect() {
+  # Echo the recommended decision from the current settings.json .statusLine:
+  #   install => no statusLine (absent/null) or unreadable/malformed
+  #   skip    => .statusLine.command is already this project's script (idempotent)
+  #   chain   => a different statusLine is present (wrap it)
+  local settings script state
+  settings="$(claude_settings_path)"
+  script="$(statusline_script_path)"
+  [ -f "$settings" ] || { printf 'install'; return 0; }
+  command -v jq >/dev/null 2>&1 || { printf 'install'; return 0; }
+  state="$(jq -r --arg s "$script" '
+    if (.statusLine == null) then "install"
+    elif (.statusLine.command == $s) then "skip"
+    else "chain" end' "$settings" 2>/dev/null)"
+  case "$state" in
+    install|skip|chain) printf '%s' "$state" ;;
+    *) printf 'install' ;;
+  esac
+}
+
+statusline_original_script() {
+  # Resolve the on-disk script referenced by a statusLine .command string. Try
+  # the WHOLE string as a path first (handles a bare, possibly-spaced path), then
+  # each whitespace token, with ~ expanded. Echo the path + return 0 on success;
+  # return 1 when nothing on disk can be identified (inline / interpreter-wrapped
+  # spaced command) — the caller must then treat it as an UNVERIFIABLE writer,
+  # never as "no writer" (design C4 single-writer safety).
+  #
+  # M1: `for tok in $cmd` word-splits intentionally — disable globbing around it
+  # so a token like `*` can't expand to filenames; restore the prior -f state.
+  local cmd="$1" tok expanded whole result="" restore
+  case $- in *f*) restore='set -f' ;; *) restore='set +f' ;; esac
+  whole="${cmd/#\~/$HOME}"
+  if [ -f "$whole" ]; then printf '%s' "$whole"; return 0; fi
+  set -f
+  for tok in $cmd; do
+    expanded="${tok/#\~/$HOME}"
+    if [ -f "$expanded" ]; then result="$expanded"; break; fi
+  done
+  eval "$restore"
+  [ -n "$result" ] && { printf '%s' "$result"; return 0; }
+  return 1
+}
+
+statusline_migrate_old_writer() {
+  # $1 = original statusLine command string. Returns 0 = clear to chain (no old
+  # writer, or its lines were safely removed), 1 = old writer present/unverifiable
+  # and NOT safely resolved ⇒ caller forces skip + degraded.
+  local cmd="$1" script
+
+  if ! script="$(statusline_original_script "$cmd")"; then
+    # I1: cannot resolve an on-disk script (inline / interpreter-wrapped spaced
+    # command). Do NOT assume "no writer" — that would bypass single-writer
+    # safety. Non-interactive => degrade; interactive => let the user decide to
+    # chain at their own risk. Never silently allow.
+    say "$(msg statusline_old_writer_unverified)$cmd"
+    if [ "$NON_INTERACTIVE" -eq 1 ]; then return 1; fi
+    if [ "$ASSUME_YES" -eq 1 ]; then return 0; fi
+    if prompt_yn statusline_unverified_q; then return 0; else return 1; fi
+  fi
+
+  grep -q 'claude-rate-limits.json' "$script" 2>/dev/null || return 0
+
+  # A second writer to the shared rate-limits cache — never run both.
+  say "$(msg statusline_old_writer)"
+  say "$(grep -n 'claude-rate-limits.json' "$script" 2>/dev/null)"
+
+  # A destructive edit to the user's script demands an explicit confirm; a
+  # non-interactive run cannot obtain one → treat as declined.
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then return 1; fi
+  if [ "$ASSUME_YES" -eq 0 ] && ! prompt_yn statusline_migrate_confirm; then
+    return 1
+  fi
+
+  sed -i.bak '/claude-rate-limits.json/d' "$script" 2>/dev/null || return 1
+
+  # C1: substring-line deletion can slice a line out of an enclosing
+  # `if … claude-rate-limits.json …; then … fi` block and leave broken syntax.
+  # Validate the edited script; on breakage restore the .bak and FAIL migration
+  # (the caller forces skip + degraded) rather than report a silently-broken chain.
+  if ! bash -n "$script" 2>/dev/null; then
+    [ -f "$script.bak" ] && mv -f "$script.bak" "$script"
+    say "$(msg statusline_migrate_broke)$script"
+    return 1
+  fi
+  say "$(msg statusline_migrate_done)$script.bak"
+  return 0
+}
+
+statusline_emit() {
+  # statusline_emit <status> <decision> <written:true|false>
+  [ "$JSON_MODE" -eq 1 ] || return 0
+  emit "statusline:apply" "$1" \
+    "$(jq -cn --arg decision "$2" --argjson written "$3" \
+      '{decision:$decision,written:$written}')"
+}
+
+statusline_config_write() {
+  # statusline_config_write <raw-json> — persist statusline_chain under the lock.
+  config_set_field_json statusline_chain "$1"
+}
+
+statusline_apply_chain() {
+  local settings cmd original payload
+  settings="$(claude_settings_path)"
+  if ! command -v jq >/dev/null 2>&1 || [ ! -f "$settings" ]; then
+    say "$(msg statusline_chain_noread)"
+    DEC_statusline=skip
+    RUN_STATUS=degraded
+    statusline_emit degraded chain false
+    return 0
+  fi
+
+  cmd="$(jq -r '.statusLine.command // empty' "$settings" 2>/dev/null)"
+  original="$(jq -c '.statusLine' "$settings" 2>/dev/null)"
+  if [ -z "$original" ] || [ "$original" = "null" ]; then
+    # Nothing meaningful to chain — behaves like a fresh install (no-chain marker).
+    if statusline_config_write '{}'; then
+      say "$(msg statusline_write_install)"
+      statusline_emit ok install true
+    else
+      say "$(msg statusline_write_fail)"
+      RUN_STATUS=degraded
+      statusline_emit fail install false
+    fi
+    return 0
+  fi
+
+  # Single-writer migration (design C4) before we chain into the old command.
+  if ! statusline_migrate_old_writer "$cmd"; then
+    say "$(msg statusline_migrate_declined)"
+    DEC_statusline=skip
+    RUN_STATUS=degraded
+    statusline_emit degraded chain false
+    return 0
+  fi
+
+  payload="$(jq -cn --arg c "$cmd" --argjson o "$original" \
+    '{command:$c, original:$o}')"
+  if statusline_config_write "$payload"; then
+    say "$(msg statusline_write_chain)"
+    statusline_emit ok chain true
+  else
+    say "$(msg statusline_write_fail)"
+    RUN_STATUS=degraded
+    statusline_emit fail chain false
+  fi
+}
+
+statusline_module() {
+  case "$DEC_statusline" in
+    skip)
+      statusline_emit skip skip false
+      ;;
+    install)
+      if statusline_config_write '{}'; then
+        say "$(msg statusline_write_install)"
+        statusline_emit ok install true
+      else
+        say "$(msg statusline_write_fail)"
+        RUN_STATUS=degraded
+        statusline_emit fail install false
+      fi
+      ;;
+    chain)
+      statusline_apply_chain
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Deploy assembly + execution finale (plan Task 8).
+#
+# setup's LAST step, after every module decision is resolved (statusline_module
+# may have downgraded DEC_statusline to skip). Map the resolved skip decisions to
+# deploy.sh --skip-* flags (install decisions add NO flag), assemble the
+# `deploy.sh install ...` command, and either execute it or — under the dry-run
+# seam ($HAT_SETUP_DRYRUN or --dry-run, used by the sandbox tests) — only print
+# it. Don't re-implement deploy internals; just assemble + invoke.
+# ---------------------------------------------------------------------------
+deploy_flags() {
+  local flags=""
+  [ "$DEC_tmux" = skip ]       && flags="$flags --skip-tmux"
+  [ "$DEC_daemon" = skip ]     && flags="$flags --skip-daemon"
+  [ "$DEC_ws_timer" = skip ]   && flags="$flags --skip-ws-timer"
+  [ "$DEC_stop_hook" = skip ]  && flags="$flags --skip-stop-hook"
+  [ "$DEC_statusline" = skip ] && flags="$flags --skip-statusline"
+  [ "$DEC_alias" = skip ]      && flags="$flags --skip-alias"
+  printf '%s' "${flags# }"
+}
+
+deploy_module() {
+  local deploy flags cmd dry=0 dryjson=false
+  [ -n "${HAT_SETUP_DRYRUN:-}" ] && dry=1
+  [ "$DRY_RUN" -eq 1 ] && dry=1
+  [ "$dry" -eq 1 ] && dryjson=true
+
+  deploy="${HAT_DEPLOY_SCRIPT:-$SCRIPT_ROOT/scripts/deploy.sh}"
+  flags="$(deploy_flags)"
+  if [ -n "$flags" ]; then
+    cmd="$deploy install $flags"
+  else
+    cmd="$deploy install"
+  fi
+
+  # JSONL event carrying the assembled command (json mode only; jq guaranteed).
+  [ "$JSON_MODE" -eq 1 ] && emit "deploy" ok \
+    "$(jq -cn --arg cmd "$cmd" --argjson dry "$dryjson" \
+      '{command:$cmd,dry_run:$dry}')"
+
+  if [ "$dry" -eq 1 ]; then
+    say "$(msg deploy_dryrun)$cmd"
+    return 0
+  fi
+
+  say "$(msg deploy_running)$cmd"
+  # Intentional word-splitting: each --skip-* must be a separate deploy argument.
+  # C2: deploy.sh's log() writes human text to STDOUT and is not --json-aware, so
+  # in --json mode its output would pollute the pure-JSONL stream. Redirect the
+  # child's stdout to stderr there; our own `deploy` JSONL event already went out.
+  # shellcheck disable=SC2086
+  if [ "$JSON_MODE" -eq 1 ]; then
+    "$deploy" install $flags >&2
+  else
+    "$deploy" install $flags
+  fi
+}
+
+run_wizard() {
+  parse_flags "$@"
+
+  # --json output is assembled with jq; without it every emit would silently
+  # produce broken JSON yet still exit 0. Fail loudly here (plain printf, not
+  # emit/die-via-jq) before any object is written. This is the fresh-machine
+  # path agents hit via `setup --non-interactive --json --deps=check`.
+  if [ "$JSON_MODE" -eq 1 ] && ! command -v jq >/dev/null 2>&1; then
+    printf 'error: jq is required for --json output but was not found on PATH.\n' >&2
+    exit 1
+  fi
+
+  # Resolve LANG_SEL from $LANG when no --lang given (msg() already usable).
+  if [ -z "$FLAG_lang" ]; then
+    case "${LANG:-}" in
+      zh*) LANG_SEL=zh ;;
+      *) LANG_SEL=en ;;
+    esac
+  fi
+
+  resolve_interactivity
+
+  if [ "$NON_INTERACTIVE" -eq 0 ]; then
+    language_first_screen
+    say "$(msg title)"
+  fi
+
+  resolve_all_decisions
+
+  # Finalize the interactive icon choice BEFORE emitting decisions so the single
+  # canonical `icons` event carries the value that gets written to config.
+  icon_selftest
+
+  [ "$JSON_MODE" -eq 1 ] && emit_all_decisions
+
+  # Execute the resolved module bodies. deps_module may exit nonzero (required
+  # dep missing in --deps=check); icon_apply then persists icon_set under the
+  # cross-process config lock.
+  deps_module
+  icon_apply
+
+  # Keymap module: preset -> conflict scan -> per-binding wizard -> generate the
+  # private/keymap.conf overlay -> sandbox trial-load (from DEC_keymap).
+  keymap_module
+
+  # Statusline: write agent-config.json's statusline_chain per the resolved
+  # decision (chain migration may downgrade DEC_statusline to skip). deploy.sh
+  # reads this config; setup never edits settings.json itself.
+  statusline_module
+
+  # Deploy assembly + execution finale — setup's last step, after ALL module
+  # decisions are resolved. Under the dry-run seam it only prints the command.
+  deploy_module
+
+  if [ "$JSON_MODE" -eq 1 ]; then
+    emit_result
+  else
+    print_summary
+    say "$(msg wizard_done)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# agent-guide — static machine-readable contract for agent callers.
+# ---------------------------------------------------------------------------
+agent_guide() {
+  cat <<'JSON'
+{
+  "tool": "hat-config setup",
+  "flags": {
+    "--lang":       {"values": ["zh", "en"],                    "default": "infer($LANG)->en"},
+    "--icons":      {"values": ["nerd", "emoji", "ascii"],      "default": "heuristic(TERM_PROGRAM: ghostty->nerd, else emoji)"},
+    "--keymap":     {"values": ["default", "compat", "minimal"], "default": "default"},
+    "--deps":       {"values": ["auto", "check", "skip"],       "default": "check"},
+    "--tmux":       {"values": ["install", "skip"],             "default": "skip"},
+    "--daemon":     {"values": ["install", "skip"],             "default": "skip"},
+    "--ws-timer":   {"values": ["install", "skip"],             "default": "skip"},
+    "--stop-hook":  {"values": ["install", "skip"],             "default": "skip"},
+    "--statusline": {"values": ["install", "chain", "skip"],    "default": "skip"},
+    "--alias":      {"values": ["install", "skip"],             "default": "skip"},
+    "--non-interactive": {"values": ["<bool>"], "default": "auto when stdin not a tty or $CI set"},
+    "--interactive":     {"values": ["<bool>"], "default": "false (aborts if $CI set)"},
+    "--json":            {"values": ["<bool>"], "default": "false"},
+    "--yes":             {"values": ["<bool>"], "default": "false (suppresses confirms only; does not change defaults)"},
+    "--dry-run":         {"values": ["<bool>"], "default": "false (also enabled by $HAT_SETUP_DRYRUN); prints the assembled deploy.sh command instead of executing it"}
+  },
+  "decision_points": [
+    "language",
+    "icons",
+    "keymap",
+    "deps",
+    "tmux",
+    "daemon",
+    "ws-timer",
+    "stop-hook",
+    "statusline",
+    "alias"
+  ],
+  "output_schema": {
+    "mode": "In --json mode STDOUT is pure JSONL (one object per line); all prose goes to STDERR.",
+    "step": {
+      "step": "<decision-point id, string>",
+      "status": "ok | skip | fail | degraded",
+      "detail": "<arbitrary JSON value>"
+    },
+    "result": {
+      "result": "complete | degraded | failed"
+    }
+  },
+  "idempotency": "Resolution + emission is side-effect free and repeatable. Non-interactive intrusive actions (tmux/daemon/ws-timer/stop-hook/statusline/alias) default to skip; opt in explicitly with --<x>=install. Actual deploy is idempotent (managed-block markers + launchd bootout/bootstrap) and safe to re-run.",
+  "at1_example": "/bin/bash scripts/setup --non-interactive --json --deps=check"
+}
+JSON
+}
+
+main() {
+  case "${1:-}" in
+    agent-guide)
+      agent_guide
+      ;;
+    *)
+      run_wizard "$@"
+      ;;
+  esac
+}
+
+# Only run the wizard when executed directly; `source scripts/setup` (tests) must
+# NOT trigger the whole flow (which could run a real deploy.sh install).
+if [ "${BASH_SOURCE[0]:-}" = "${0}" ]; then
+  main "$@"
+fi

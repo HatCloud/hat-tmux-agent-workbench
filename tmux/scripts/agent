@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# agent — launch an AI coding client in a 3-pane (ai/git/run) tmux layout.
+#
+# Outside tmux: creates a new session and attaches.
+# Inside tmux:  opens a new window in the current session.
+# A fzf picker chooses the client + Claude provider (Enter = default Claude).
+# `agent -r [name|id]` resumes a session (passed through to the chosen client).
+# The window's @agent_client / @agent_provider are set so the agent-tracker
+# on-focus rename can name the window (项目名·客户端#编号).
+set -euo pipefail
+
+cwd="$PWD"
+
+# -r/--resume [name|id]: resume an existing session, passed through to the
+# selected client. No value → the client's interactive resume picker.
+resume=0
+resume_arg=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--resume)
+      resume=1
+      # consume an optional value when the next arg isn't another flag
+      if [[ -n "${2:-}" && "${2#-}" == "$2" ]]; then
+        resume_arg="$2"
+        shift
+      fi
+      ;;
+    *) ;;
+  esac
+  shift
+done
+
+default_provider="$(cat "$HOME/.claude/config/default-provider" 2>/dev/null || echo official)"
+
+build_options() {
+  printf 'Claude Code · 默认 (%s)\n' "$default_provider"
+  local env p
+  for env in "$HOME"/.claude/providers/*.env; do
+    [[ -e "$env" ]] || continue
+    p="$(basename "$env" .env)"
+    printf 'Claude Code · %s\n' "$p"
+  done
+  # Codex is a real CLI on PATH; only list clients that can actually launch.
+  printf 'Codex\n'
+}
+
+choice="$(build_options | fzf --prompt='启动什么客户端 > ' --height=45% --reverse \
+  --header='回车 = 默认 Claude，Esc 取消' || true)"
+# Esc / empty selection aborts without launching anything.
+[[ -z "$choice" ]] && exit 0
+
+# Map the choice to @agent_client / @agent_provider / the ai-pane command.
+agent_client="claude"
+agent_provider="$default_provider"
+agent_model=""
+ai_cmd="claudeH"
+case "$choice" in
+  "Claude Code · 默认"*)
+    agent_client="claude"; agent_provider="$default_provider"; ai_cmd="claudeH"
+    ;;
+  "Claude Code · "*)
+    agent_provider="${choice#Claude Code · }"
+    agent_client="claude"
+    case "$agent_provider" in
+      official)   ai_cmd="claude-official" ;;
+      minimax)    ai_cmd="claude-minimax" ;;
+      kimi)       ai_cmd="claude-kimi" ;;
+      deepseek)   ai_cmd="claude-ds" ;;
+      openrouter) ai_cmd="claude-openrouter" ;;
+      temp)       ai_cmd="claude-temp" ;;
+      *)          ai_cmd="claudeH" ;;
+    esac
+    ;;
+  Codex)    agent_client="codex"; agent_provider=""; ai_cmd="codex" ;;
+esac
+
+agent_model=""
+case "$choice" in
+  *Sonnet*) agent_model="sonnet" ;;
+  *Opus*)   agent_model="opus" ;;
+esac
+
+# Pass resume through to the client: claude uses --resume, codex uses `resume`.
+# A bare flag (no value) drops into the client's interactive resume picker.
+if [[ "$resume" == "1" ]]; then
+  if [[ "$agent_client" == "codex" ]]; then
+    ai_cmd="$ai_cmd resume"
+  else
+    ai_cmd="$ai_cmd --resume"
+  fi
+  [[ -n "$resume_arg" ]] && ai_cmd="$ai_cmd $resume_arg"
+fi
+
+# Build the ai/git/run layout in $win (a window id with a single pane) and start
+# the client in the ai pane. Window @agent_* vars feed the on-focus rename.
+_abbrev_dir() {
+  local path="${1/#$HOME/~}"
+  local IFS='/' result i seg
+  read -ra parts <<< "$path"
+  local n=${#parts[@]}
+  if [[ $n -le 2 ]]; then echo "$path"; return; fi
+  result="${parts[0]}"
+  for ((i=1; i<n-1; i++)); do
+    seg="${parts[$i]}"
+    if [[ "${seg:0:1}" == "." && ${#seg} -gt 1 ]]; then
+      result="${result}/${seg:0:2}"
+    else
+      result="${result}/${seg:0:1}"
+    fi
+  done
+  echo "${result}/${parts[$n-1]}"
+}
+
+# Map a directory to its main worktree root when the cwd is a git worktree.
+# Mirrors agent-tracker/cmd/agent/main.go's mainRepoPath: a single git call
+# returns --git-common-dir and --git-dir; in a worktree they differ, in a
+# non-worktree they are equal. Echoes the main repo root, or $1 on
+# non-worktree / non-git / git-error.
+_main_repo_dir() {
+  local cwd="$1"
+  [[ -z "$cwd" ]] && { echo "$cwd"; return; }
+  local out common_dir git_dir
+  if ! out="$(git -C "$cwd" rev-parse --git-common-dir --git-dir 2>/dev/null)"; then
+    echo "$cwd"; return
+  fi
+  common_dir="${out%%$'\n'*}"
+  git_dir="${out##*$'\n'}"
+  [[ -z "$common_dir" || -z "$git_dir" ]] && { echo "$cwd"; return; }
+  [[ "${common_dir:0:1}" != "/" ]] && common_dir="$cwd/$common_dir"
+  [[ "${git_dir:0:1}" != "/" ]] && git_dir="$cwd/$git_dir"
+  if [[ "$common_dir" == "$git_dir" ]]; then
+    echo "$cwd"
+  else
+    dirname "$common_dir"
+  fi
+}
+
+build_layout() {
+  local win="$1" ai_pane
+  # 三格 ai/git/run 切分 + lazygit + @agent_pane_role 由 build_agent_layout.sh
+  # 统一负责（与 new_agent_window.sh / restore_workspace.sh 共用，唯一真相）。
+  "$(dirname "${BASH_SOURCE[0]}")/build_agent_layout.sh" "$win" "$cwd"
+  ai_pane="$(tmux list-panes -t "$win" -F '#{pane_id}' | head -1)"
+
+  tmux set -w -t "$win" @agent_client "$agent_client"
+  tmux set -w -t "$win" @agent_dir "$(_abbrev_dir "$(_main_repo_dir "$cwd")")"
+  if [[ -n "$agent_provider" ]]; then
+    tmux set -w -t "$win" @agent_provider "$agent_provider"
+  else
+    tmux set -wu -t "$win" @agent_provider 2>/dev/null || true
+  fi
+  if [[ -n "$agent_model" ]]; then
+    tmux set -w -t "$win" @agent_model "$agent_model"
+  else
+    tmux set -wu -t "$win" @agent_model 2>/dev/null || true
+  fi
+
+  tmux select-pane -t "$ai_pane"
+  tmux send-keys -t "$ai_pane" "$ai_cmd" Enter
+}
+
+if [[ -z "${TMUX:-}" ]]; then
+  session_id="$(tmux new-session -d -P -F '#{session_id}' -c "$cwd")"
+  win="$(tmux list-windows -t "$session_id" -F '#{window_id}' | head -1)"
+  # standardize session numbering (<index>-<label>)
+  python3 "$HOME/.hat-config/tmux/scripts/session_manager.py" ensure 2>/dev/null || true
+  build_layout "$win"
+  tmux attach -t "$session_id"
+else
+  win="$(tmux new-window -P -F '#{window_id}' -c "$cwd")"
+  build_layout "$win"
+fi

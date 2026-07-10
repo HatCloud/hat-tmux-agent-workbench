@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# hat-tmux-agent-workbench pre-commit
+# Refuse to commit reserved private paths (personal overlay / task notes / local
+# config). These must stay out of the open-source repo history.
+set -euo pipefail
+
+# Reserved entries: a trailing "/" means "this prefix and anything under it";
+# otherwise it is an exact path match (relative to the repo root).
+#
+# Deletions are excluded (--diff-filter=d): un-tracking a reserved path (e.g.
+# `git rm --cached agent-tracker/agent-config.json`, which the overlay migration
+# does on purpose) must be allowed. Only additions/modifications/renames INTO a
+# reserved path leak private content and are refused.
+RESERVED=(
+  "private/"
+  "CLAUDE.md"
+  ".tasks/"
+  "snippets/private/"
+  "snippets/.favorites"
+  "agent-tracker/agent-config.json"
+)
+
+staged="$(git diff --cached --name-only --diff-filter=d)"
+[[ -n "$staged" ]] || exit 0
+
+violations=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  for r in "${RESERVED[@]}"; do
+    case "$r" in
+      */) # prefix match
+        if [[ "$path" == "$r"* ]]; then
+          violations+=("$path")
+          break
+        fi
+        ;;
+      *) # exact match
+        if [[ "$path" == "$r" ]]; then
+          violations+=("$path")
+          break
+        fi
+        ;;
+    esac
+  done
+done <<< "$staged"
+
+if [[ "${#violations[@]}" -gt 0 ]]; then
+  printf 'pre-commit: refusing to commit reserved private path(s):\n' >&2
+  for v in "${violations[@]}"; do
+    printf '  %s\n' "$v" >&2
+  done
+  printf 'These paths are private and must not be committed. Unstage them, e.g. `git restore --staged <path>`.\n' >&2
+  exit 1
+fi
+
+exit 0

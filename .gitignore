@@ -1,0 +1,23 @@
+/.DS_Store
+/tmp/
+/state/
+__pycache__/
+*.pyc
+/agent-tracker/bin/
+/agent-tracker/agent
+
+# git worktree（hat-flow task 工作流等）置于此，勿提交
+/.claude/worktrees/
+
+# Syncthing 运行文件（同步元数据 + 忽略规则），非仓库代码，勿提交
+/.stfolder/
+/.stignore
+/.stignore-shared
+
+# ── private overlay（个人叠加层，不进公开仓）──────────────────────────
+/private/
+/CLAUDE.md
+/.tasks/
+/snippets/private/
+/snippets/.favorites
+/agent-tracker/agent-config.json
