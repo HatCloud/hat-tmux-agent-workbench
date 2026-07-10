@@ -188,6 +188,58 @@ func TestCodexStatusFromRollout(t *testing.T) {
 	}
 	if err := os.WriteFile(path, []byte(
 		`{"timestamp":"2026-06-22T12:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:01Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call-a"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-a"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexStatusFromRolloutAt(path, now); got != "busy" {
+		t.Fatalf("codexStatusFromRollout(answered request_user_input) = %q, want busy", got)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-06-22T12:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:01Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call-a"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:02Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call-b"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-b"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexStatusFromRolloutAt(path, now); got != "asking" {
+		t.Fatalf("codexStatusFromRollout(one of two requests answered) = %q, want asking", got)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-06-22T12:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:01Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-other"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexStatusFromRolloutAt(path, now); got != "asking" {
+		t.Fatalf("codexStatusFromRollout(idless request with unrelated output) = %q, want asking", got)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-06-22T12:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:01Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call-a"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-a"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:03Z","type":"event_msg","payload":{"type":"task_complete"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexStatusFromRolloutAt(path, now); got != "idle" {
+		t.Fatalf("codexStatusFromRollout(completed after request_user_input) = %q, want idle", got)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-06-22T12:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:01Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call-a"}}`+"\n"+
+			`{"timestamp":"2026-06-22T12:00:02Z","type":"event_msg","payload":{"type":"turn_aborted"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codexStatusFromRolloutAt(path, now); got != "idle" {
+		t.Fatalf("codexStatusFromRollout(aborted after request_user_input) = %q, want idle", got)
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-06-22T12:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
 			`{"timestamp":"2026-06-22T12:00:01Z","type":"event_msg","payload":{"type":"agent_message","phase":"commentary"}}`+"\n",
 	), 0o644); err != nil {
 		t.Fatal(err)

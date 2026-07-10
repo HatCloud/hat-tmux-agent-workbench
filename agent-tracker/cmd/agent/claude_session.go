@@ -212,6 +212,7 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 	status := ""
 	lastMeaningful := ""
 	autoReviewApprovals := false
+	pendingUserInputCallIDs := map[string]struct{}{}
 	var lastToolCallAt time.Time
 	var entry struct {
 		Timestamp string          `json:"timestamp"`
@@ -255,6 +256,7 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 			Type              string `json:"type"`
 			Role              string `json:"role"`
 			Name              string `json:"name"`
+			CallID            string `json:"call_id"`
 			ApprovalsReviewer string `json:"approvals_reviewer"`
 		}
 		if json.Unmarshal(entry.Payload, &payload) != nil {
@@ -268,14 +270,17 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 			case "task_started":
 				status = "busy"
 				lastMeaningful = "task_started"
+				clear(pendingUserInputCallIDs)
 			case "task_complete":
 				status = "idle"
 				lastMeaningful = "task_complete"
+				clear(pendingUserInputCallIDs)
 			case "turn_aborted", "thread_rolled_back":
 				// Codex can terminate a turn without task_complete when an editor
 				// action aborts or rolls it back. Both events leave the thread idle.
 				status = "idle"
 				lastMeaningful = payload.Type
+				clear(pendingUserInputCallIDs)
 			case "agent_message":
 				lastMeaningful = "agent_message"
 			case "user_message":
@@ -288,7 +293,9 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 			switch payload.Type {
 			case "function_call", "custom_tool_call":
 				if payload.Name == "request_user_input" {
-					return "asking"
+					// Rollouts retain earlier turns, so keep explicit questions pending
+					// until their matching output or a terminal event arrives.
+					pendingUserInputCallIDs[payload.CallID] = struct{}{}
 				}
 				status = "busy"
 				lastMeaningful = "tool_call"
@@ -296,6 +303,9 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 					lastToolCallAt = ts
 				}
 			case "function_call_output", "custom_tool_call_output":
+				if payload.CallID != "" {
+					delete(pendingUserInputCallIDs, payload.CallID)
+				}
 				if status == "" {
 					status = "busy"
 				}
@@ -309,6 +319,9 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 		if err != nil {
 			break
 		}
+	}
+	if status == "busy" && len(pendingUserInputCallIDs) > 0 {
+		return "asking"
 	}
 	if status == "busy" && !autoReviewApprovals && lastMeaningful == "tool_call" && !lastToolCallAt.IsZero() && now.Sub(lastToolCallAt) >= codexToolCallQuietWindow {
 		return "asking"
