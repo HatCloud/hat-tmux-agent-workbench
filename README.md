@@ -2,6 +2,12 @@
 
 **English** · [简体中文](./README.zh-CN.md)
 
+> **Note:** This is my personal configuration repo, so it will likely get
+> frequent, personally-driven updates. I may not be able to respond to issues
+> promptly — or at all. The recommended way to use it is to fork it and make your
+> own customizations; the project is MIT-licensed, so you're free to modify it
+> however you like.
+
 A personal tmux workflow for driving AI coding agents (Claude Code, Codex, and
 custom providers) from the terminal. It gives each agent a three-pane window
 (agent / git / run), auto-names and status-tracks those windows from a small Go

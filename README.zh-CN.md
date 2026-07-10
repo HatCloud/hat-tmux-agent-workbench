@@ -2,6 +2,10 @@
 
 [English](./README.md) · **简体中文**
 
+> **说明：** 这是我个人的配置库，因此很可能会基于个人需要频繁更新。我不一定能及时
+> （甚至不一定能）受理 issue。推荐的用法是基于本仓库做你自己的自定义修改——本项目
+> 采用 MIT 协议，可以随意修改。
+
 面向终端的个人 tmux 工作流，用来驱动 AI 编码 agent（Claude Code、Codex 及自定义
 provider）：为每个 agent 开一个三 pane 窗口（agent / git / run），由一个小型 Go
 daemon 自动命名并追踪这些窗口的状态，在 tmux 状态栏呈现 ⏳/🔔 任务状态与桌面通知，
