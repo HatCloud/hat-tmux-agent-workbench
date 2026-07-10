@@ -223,6 +223,12 @@ func TestScreenShowsUsageLimit(t *testing.T) {
 		"│ You've hit your session limit · resets 12:40am │",
 		"You have hit your usage limit",
 		"Usage limit reached · upgrade or wait",
+		"You've reached your weekly limit",
+		"You're approaching your usage limit",
+		"Your limit will reset at 3pm",
+		"Opus limit resets at 9:00",
+		"resets at 12",
+		"Please try again later",
 	} {
 		if !screenShowsUsageLimit(s) {
 			t.Fatalf("should match: %q", s)
@@ -230,5 +236,26 @@ func TestScreenShowsUsageLimit(t *testing.T) {
 	}
 	if screenShowsUsageLimit("just a normal claude screen ready for input") {
 		t.Fatal("should not match plain screen")
+	}
+}
+
+// TestShouldDismissUsageDialog covers the only safety gate for timer firing:
+// Escape only when neither client is busy AND the quota box is on screen.
+func TestShouldDismissUsageDialog(t *testing.T) {
+	cases := []struct {
+		name                                     string
+		claudeBusy, codexBusy, screenMatch, want bool
+	}{
+		{"claude busy blocks", true, false, true, false},
+		{"codex busy blocks", false, true, true, false},
+		{"both busy blocks", true, true, true, false},
+		{"idle no dialog → no escape", false, false, false, false},
+		{"idle + dialog → escape", false, false, true, true},
+	}
+	for _, c := range cases {
+		if got := shouldDismissUsageDialog(c.claudeBusy, c.codexBusy, c.screenMatch); got != c.want {
+			t.Errorf("%s: shouldDismissUsageDialog(%v,%v,%v) = %v, want %v",
+				c.name, c.claudeBusy, c.codexBusy, c.screenMatch, got, c.want)
+		}
 	}
 }

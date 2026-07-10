@@ -393,30 +393,66 @@ func quotaResetFireAt(windowID string) (at time.Time, fallback bool, err error) 
 
 // ── usage-limit dialog dismissal (timer fire path) ──────────────────────────
 
+// reUsageLimitScreen matches the Claude usage-limit / quota dialog as scraped
+// from the pane. Kept a targeted screen match (never a blanket "there's a word
+// on screen"), but broadened to the phrasings Claude uses across session /
+// weekly / opus limits and the reset-countdown box, since the earlier narrow
+// pattern missed the box the user actually hit.
 var reUsageLimitScreen = regexp.MustCompile(
-	`(?i)hit your (session|usage|weekly|5-hour|five-hour) limit|usage limit reached`)
+	`(?i)` +
+		`hit your (session|usage|weekly|5-hour|five-hour|opus) limit` +
+		`|usage limit reached` +
+		`|reached your (usage|session|weekly) limit` +
+		`|approaching your (usage|session|weekly) limit` +
+		`|(usage|session|weekly|opus) limit (will reset|resets)` +
+		`|your limit (will reset|resets)` +
+		`|resets? at \d` +
+		`|try again (later|after)`)
 
 func screenShowsUsageLimit(screen string) bool {
 	return reUsageLimitScreen.MatchString(screen)
 }
 
-// dismissUsageLimitDialog clears a Claude usage-limit dialog that would
-// otherwise swallow the keys a timer injects. Escape is only sent when the
-// dialog text is actually on screen and the session is not busy — a blind
-// Escape would abort an in-flight turn.
+// shouldDismissUsageDialog is the pure safety gate for the timer-fire Escape.
+// Escape is sent ONLY when the usage-limit box is actually on screen AND neither
+// the pane's Claude nor Codex session is actively generating. A blind Escape
+// mid-turn would abort an in-flight response; an Escape with no dialog present
+// could wipe a user's unsent draft or disrupt an asking/waiting prompt — so both
+// conditions must hold. This is the only safety gate for timer firing.
+func shouldDismissUsageDialog(claudeBusy, codexBusy, screenMatch bool) bool {
+	if claudeBusy || codexBusy {
+		return false
+	}
+	return screenMatch
+}
+
+// dismissUsageLimitDialog clears a Claude usage-limit dialog that would otherwise
+// swallow the keys a timer injects. It sends Escape only when the dialog is
+// detected on screen and neither the Claude nor the Codex session in the pane is
+// busy (see shouldDismissUsageDialog) — never a blind Escape into an in-flight
+// turn or an idle prompt that may hold a draft.
 func dismissUsageLimitDialog(paneID string, ci *claudeIndex) {
 	if ci == nil {
 		built := buildClaudeIndex()
 		ci = &built
 	}
-	if meta, _, ok := ci.sessionForPanePID(panePID(paneID)); ok &&
-		strings.EqualFold(meta.Status, "busy") {
-		return
+	claudeBusy := false
+	if meta, _, ok := ci.sessionForPanePID(panePID(paneID)); ok {
+		claudeBusy = strings.EqualFold(meta.Status, "busy")
 	}
-	out, err := runTmuxOutput("capture-pane", "-p", "-t", paneID)
-	if err != nil || !screenShowsUsageLimit(out) {
+	// Codex windows never populate byPID, so the Claude guard alone would let a
+	// blind Escape land mid-generation on Codex — guard it explicitly too.
+	codexBusy := false
+	if meta, _, ok := codexThreadForPane(paneID, ci); ok {
+		codexBusy = strings.EqualFold(meta.Status, "busy")
+	}
+	screenMatch := false
+	if out, err := runTmuxOutput("capture-pane", "-p", "-t", paneID); err == nil {
+		screenMatch = screenShowsUsageLimit(out)
+	}
+	if !shouldDismissUsageDialog(claudeBusy, codexBusy, screenMatch) {
 		return
 	}
 	_ = runTmux("send-keys", "-t", paneID, "Escape")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 }

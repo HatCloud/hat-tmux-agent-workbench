@@ -855,25 +855,36 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 	// label > project dir.
 	sessionTitle := liveTitle
 	if sessionTitle == "" {
-		sessionTitle = tmuxWindowOption(windowID, "@agent_title")
+		// @agent_title may be a user-typed title (prefix ] prompt). Strip C0/C1
+		// control chars and '#' so a pasted title can't corrupt the status line —
+		// same hygiene as the ssh host marker.
+		sessionTitle = sanitizeWindowMarker(tmuxWindowOption(windowID, "@agent_title"))
 	}
+
+	// When enabled (default), strip a leading YYYY-MM-DD- from the title/label
+	// segment so task dirs like "2026-07-09-open-source-refactor" render as
+	// "open-source-refactor" in the tab, @agent_notify_name, and Window Nav Name.
+	// (The project/dir segment already strips it via abbrevProject.)
+	stripDate := stripDatePrefixSetting(cfg)
+	titleSeg := maybeStripDatePrefix(sessionTitle, stripDate)
+	labelSeg := maybeStripDatePrefix(sessionLabel, stripDate)
 
 	// assemble builds "[status]project/name (model)", each part gated by a flag.
 	// tmux already shows the window index before the name, so no idx prefix here.
 	assemble := func(showStatus, showPath, showModel bool) string {
 		var namePart string
 		switch {
-		case sessionTitle != "":
+		case titleSeg != "":
 			if showPath && project != "" {
-				namePart = abbrevProject(project) + "/" + sessionTitle
+				namePart = abbrevProject(project) + "/" + titleSeg
 			} else {
-				namePart = sessionTitle
+				namePart = titleSeg
 			}
-		case sessionLabel != "":
+		case labelSeg != "":
 			if showPath && project != "" {
-				namePart = abbrevProject(project) + "/" + sessionLabel
+				namePart = abbrevProject(project) + "/" + labelSeg
 			} else {
-				namePart = sessionLabel
+				namePart = labelSeg
 			}
 		default:
 			namePart = abbrevProject(project)
@@ -994,10 +1005,7 @@ func autoRenameWindow(windowID, name string) {
 	}
 }
 
-const (
-	syncNamesPeriodicInterval = 5 * time.Second
-	syncNamesMaxRun           = 20 * time.Second
-)
+const syncNamesMaxRun = 20 * time.Second
 
 func syncNamesLockPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agent-sync-names-%d.lock", os.Getuid()))
@@ -1065,7 +1073,11 @@ func runTmuxSyncNames(args []string) error {
 
 	periodic := len(args) > 0 && args[0] == "--periodic"
 	now := time.Now()
-	if periodic && !syncNamesPeriodicDue(syncNamesLastStartPath(), now, syncNamesPeriodicInterval) {
+	// The status bar triggers --periodic every second; the configured poll
+	// interval (default 3s) rate-limits how often a full sync pass actually runs,
+	// so it is the primary cadence driving window naming + task/state refresh.
+	// Navigation hooks (non-periodic) stay immediate.
+	if periodic && !syncNamesPeriodicDue(syncNamesLastStartPath(), now, pollIntervalDuration(loadAppConfig())) {
 		return nil
 	}
 	_ = markSyncNamesStarted(syncNamesLastStartPath(), now)

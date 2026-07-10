@@ -25,6 +25,10 @@ const (
 	generalOptionStatusPosition = "status_position"
 	generalOptionIconSet        = "icon_set"
 	generalOptionTimerTimezone  = "timer_timezone"
+	generalOptionPollInterval   = "poll_interval"
+	generalOptionNewAgentPrompt = "new_agent_prompt"
+	generalOptionStripDate      = "strip_date_prefix"
+	generalOptionWindowNavSize  = "window_nav_size"
 )
 
 type generalEntry struct {
@@ -48,6 +52,9 @@ type generalPanelModel struct {
 	tzEditing   bool
 	tzInput     []rune
 	tzCursor    int
+	// editKey identifies which editable field the text editor is bound to
+	// (generalOptionTimerTimezone or generalOptionPollInterval).
+	editKey string
 }
 
 func newGeneralPanelModel() *generalPanelModel {
@@ -99,6 +106,33 @@ func (m *generalPanelModel) reload() {
 			Subtitle: "Space = system auto; Enter = set IANA timezone or UTC offset",
 			Value:    timerTimezoneSetting(cfg),
 			Editable: true,
+		},
+		{
+			Key:      generalOptionPollInterval,
+			Title:    "Poll interval",
+			Subtitle: "Enter = cycle 1s/3s/10s; Space = type a custom interval",
+			Value:    pollIntervalSetting(cfg),
+			Values:   []string{"1s", "3s", "10s"},
+			Editable: true,
+		},
+		{
+			Key:      generalOptionNewAgentPrompt,
+			Title:    "New agent prompt",
+			Subtitle: "Ask for a title before `prefix ]` creates the window",
+			Enabled:  newAgentPromptSetting(cfg),
+		},
+		{
+			Key:      generalOptionStripDate,
+			Title:    "Strip date prefix",
+			Subtitle: "Drop a leading YYYY-MM-DD- from window names/titles",
+			Enabled:  stripDatePrefixSetting(cfg),
+		},
+		{
+			Key:      generalOptionWindowNavSize,
+			Title:    "Window nav size",
+			Subtitle: "Width of the `prefix w` window navigator popup",
+			Value:    windowNavSizeSetting(cfg),
+			Values:   []string{"standard", "wide", "full"},
 		},
 	}
 	m.selected = clampInt(m.selected, 0, maxInt(0, len(m.entries)-1))
@@ -179,7 +213,7 @@ func (m *generalPanelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		key := paletteKeyString(msg)
 		if m.tzEditing {
-			m.handleTimezoneInput(key)
+			m.handleEditInput(key)
 			return m, nil
 		}
 		switch key {
@@ -195,14 +229,19 @@ func (m *generalPanelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", "l", "L":
 			if m.selectedEntryKey() == generalOptionTimerTimezone {
-				m.openTimezoneInput()
+				m.openEditInput(generalOptionTimerTimezone)
 			} else {
 				m.toggleSelected()
 			}
 		case " ":
-			if m.selectedEntryKey() == generalOptionTimerTimezone {
+			switch m.selectedEntryKey() {
+			case generalOptionTimerTimezone:
 				m.saveTimezone("auto")
-			} else {
+			case generalOptionPollInterval:
+				// Poll interval: Enter cycles the presets; Space opens the free-input
+				// editor for a custom value (mirrors the timezone editor).
+				m.openEditInput(generalOptionPollInterval)
+			default:
 				m.toggleSelected()
 			}
 		}
@@ -217,25 +256,46 @@ func (m *generalPanelModel) selectedEntryKey() string {
 	return m.entries[m.selected].Key
 }
 
-func (m *generalPanelModel) openTimezoneInput() {
-	value := timerTimezoneSetting(loadAppConfig())
-	if value == "auto" {
-		value = "UTC+8"
+func (m *generalPanelModel) openEditInput(key string) {
+	var value string
+	switch key {
+	case generalOptionPollInterval:
+		value = pollIntervalSetting(loadAppConfig())
+	default: // timezone
+		value = timerTimezoneSetting(loadAppConfig())
+		if value == "auto" {
+			value = "UTC+8"
+		}
 	}
+	m.editKey = key
 	m.tzInput = []rune(value)
 	m.tzCursor = len(m.tzInput)
 	m.tzEditing = true
 }
 
-func (m *generalPanelModel) handleTimezoneInput(key string) {
+func (m *generalPanelModel) handleEditInput(key string) {
 	switch key {
 	case "esc":
 		m.tzEditing = false
 	case "enter", "ctrl+s":
-		m.saveTimezone(string(m.tzInput))
+		if m.editKey == generalOptionPollInterval {
+			m.savePollInterval(string(m.tzInput))
+		} else {
+			m.saveTimezone(string(m.tzInput))
+		}
 	default:
 		applyPaletteInputKey(key, &m.tzInput, &m.tzCursor, false)
 	}
+}
+
+func (m *generalPanelModel) savePollInterval(value string) {
+	if err := setPollInterval(value); err != nil {
+		m.setStatus(err.Error(), 3*time.Second)
+		return
+	}
+	m.tzEditing = false
+	m.reload()
+	m.setStatus("Poll interval: "+pollIntervalSetting(loadAppConfig()), 2*time.Second)
 }
 
 func (m *generalPanelModel) saveTimezone(value string) {
@@ -278,6 +338,26 @@ func (m *generalPanelModel) toggleSelected() {
 		_ = exec.Command(filepath.Join(homeDir(), ".hat-config", "tmux", "scripts", "update_status_position.sh")).Run()
 	case generalOptionIconSet:
 		if _, err := cycleIconSet(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
+	case generalOptionPollInterval:
+		if _, err := cyclePollInterval(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
+	case generalOptionNewAgentPrompt:
+		if err := toggleNewAgentPrompt(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
+	case generalOptionStripDate:
+		if err := toggleStripDatePrefix(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
+	case generalOptionWindowNavSize:
+		if _, err := cycleWindowNavSize(); err != nil {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
 			return
 		}
@@ -395,6 +475,29 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 			} else {
 				stateText = "Timer wall-clock uses " + entry.Value
 			}
+		case entry.Key == generalOptionPollInterval:
+			stateText = "Window naming / status refresh every " + entry.Value
+		case entry.Key == generalOptionNewAgentPrompt:
+			if entry.Enabled {
+				stateText = "`prefix ]` prompts for a title before creating the window"
+			} else {
+				stateText = "`prefix ]` creates the window directly (no prompt)"
+			}
+		case entry.Key == generalOptionStripDate:
+			if entry.Enabled {
+				stateText = "Leading YYYY-MM-DD- is stripped from window names"
+			} else {
+				stateText = "Window names keep their leading YYYY-MM-DD- date"
+			}
+		case entry.Key == generalOptionWindowNavSize:
+			switch entry.Value {
+			case "standard":
+				stateText = "`prefix w` popup uses a compact width"
+			case "full":
+				stateText = "`prefix w` popup fills almost the whole client"
+			default:
+				stateText = "`prefix w` popup is wide (fits the footer on one line)"
+			}
 		case entry.Enabled:
 			stateText = "Active — system notifications are sent"
 		default:
@@ -425,6 +528,10 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 		footerKeys = [][2]string{{"J/K", "move"}, {"Enter", "edit"}, {"Space", "auto"}, {"Esc", "back"}}
 		footerCompact = [][2]string{{"Enter", "edit"}, {"Space", "auto"}, {"Esc", "back"}}
 	}
+	if m.selectedEntryKey() == generalOptionPollInterval {
+		footerKeys = [][2]string{{"J/K", "move"}, {"Enter", "cycle"}, {"Space", "custom"}, {"Esc", "back"}}
+		footerCompact = [][2]string{{"Enter", "cycle"}, {"Space", "custom"}, {"Esc", "back"}}
+	}
 	footer := pickRenderedShortcutFooter(width, renderSegments, footerKeys, footerCompact)
 	if status != "" {
 		statusText := styles.statusBad.Render(truncate(status, maxInt(12, minInt(24, width/3))))
@@ -441,19 +548,27 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 	view := lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", footer)
 	base := lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(view)
 	if m.tzEditing {
-		return m.renderTimezoneInput(styles, width, height)
+		return m.renderEditInput(styles, width, height)
 	}
 	return base
 }
 
-func (m *generalPanelModel) renderTimezoneInput(styles paletteStyles, width, height int) string {
+func (m *generalPanelModel) renderEditInput(styles paletteStyles, width, height int) string {
 	modalWidth := minInt(68, maxInt(40, width-4))
 	innerWidth := modalWidth - 4
 	value := styles.input.Render(renderInputValue(m.tzInput, m.tzCursor, styles))
+	title := "Timer timezone"
+	hint := "IANA name or UTC offset"
+	example := "Examples: Asia/Shanghai   UTC+8   +08:00"
+	if m.editKey == generalOptionPollInterval {
+		title = "Poll interval"
+		hint = "Duration or seconds"
+		example = "Examples: 1s   3s   10s   5   500ms"
+	}
 	rows := []string{
-		styles.panelTitle.Render("Timer timezone"),
+		styles.panelTitle.Render(title),
 		"",
-		styles.muted.Render("IANA name or UTC offset"),
+		styles.muted.Render(hint),
 		lipgloss.NewStyle().Width(innerWidth).Render(value),
 	}
 	if status := strings.TrimSpace(m.currentStatus()); status != "" {
@@ -461,7 +576,7 @@ func (m *generalPanelModel) renderTimezoneInput(styles paletteStyles, width, hei
 	}
 	rows = append(rows,
 		"",
-		styles.muted.Render("Examples: Asia/Shanghai   UTC+8   +08:00"),
+		styles.muted.Render(example),
 		styles.muted.Render("Enter: save   Esc: cancel"),
 	)
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)

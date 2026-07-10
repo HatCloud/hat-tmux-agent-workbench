@@ -617,11 +617,18 @@ func fireTimer(t *windowTimer, ci *claudeIndex) error {
 	if paneID == "" {
 		return fmt.Errorf("no pane found for window %s", t.WindowID)
 	}
+	// Clear a usage-limit dialog first, but ONLY when it's actually detected on
+	// screen and no agent is mid-turn (see shouldDismissUsageDialog). When it does
+	// Escape it waits ~500ms so the box tears down before the content lands; the
+	// normal no-dialog case sends nothing here and just injects content+Enter.
 	dismissUsageLimitDialog(paneID, ci)
 	if err := runTmux("send-keys", "-t", paneID, "-l", t.Content); err != nil {
 		return err
 	}
 	if t.SendEnter {
+		// Give the terminal a beat to register the injected content before Enter;
+		// firing them back-to-back can drop the submit (part of the swallow bug).
+		time.Sleep(150 * time.Millisecond)
 		return runTmux("send-keys", "-t", paneID, "Enter")
 	}
 	return nil

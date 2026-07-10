@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,89 @@ type appConfig struct {
 	TimerTimezone string `json:"timer_timezone,omitempty"`
 	// IconSet: 状态栏图标集（nerd/emoji/ascii，空=nerd）。唯一权威在 config，读取见 activeIconSet()。
 	IconSet string `json:"icon_set,omitempty"`
+	// PollInterval: sync-names 全量轮询节奏（"1s"/"3s"/"10s"/裸数字秒/Go duration，空=3s）。
+	PollInterval string `json:"poll_interval,omitempty"`
+	// NewAgentPrompt: prefix ] 建窗前是否先弹标题输入（默认 true）。由 Go 与 tmux 脚本共写，须走 config 锁。
+	NewAgentPrompt *bool `json:"new_agent_prompt,omitempty"`
+	// StripDatePrefix: 窗口名/标题段是否剥除前导 YYYY-MM-DD-（默认 true）。
+	StripDatePrefix *bool `json:"strip_date_prefix,omitempty"`
+	// WindowNavSize: prefix w 弹窗宽度档位（standard/wide/full，空=wide）。
+	WindowNavSize string `json:"window_nav_size,omitempty"`
+}
+
+// pollIntervalSetting returns the configured poll interval string, defaulting to "3s".
+func pollIntervalSetting(cfg appConfig) string {
+	if strings.TrimSpace(cfg.PollInterval) == "" {
+		return "3s"
+	}
+	return strings.TrimSpace(cfg.PollInterval)
+}
+
+// parsePollInterval is the single validator/parser for a poll-interval string:
+// a Go duration ("1s", "3s", "10s"), or a bare number of seconds ("5"). Returns
+// ok=false for anything else. pollIntervalDuration and setPollInterval both use
+// it so the two never drift.
+func parsePollInterval(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if v, err := time.ParseDuration(raw); err == nil {
+		return v, true
+	}
+	if n, err := strconv.Atoi(raw); err == nil {
+		return time.Duration(n) * time.Second, true
+	}
+	return 0, false
+}
+
+// pollIntervalDuration parses the poll interval setting via parsePollInterval,
+// falling back to 3s on failure and clamping to [500ms, 60s] to keep the cadence
+// sane.
+func pollIntervalDuration(cfg appConfig) time.Duration {
+	const (
+		fallback = 3 * time.Second
+		minDur   = 500 * time.Millisecond
+		maxDur   = 60 * time.Second
+	)
+	d, ok := parsePollInterval(pollIntervalSetting(cfg))
+	if !ok {
+		d = fallback
+	}
+	if d < minDur {
+		d = minDur
+	}
+	if d > maxDur {
+		d = maxDur
+	}
+	return d
+}
+
+// newAgentPromptSetting reports whether prefix ] prompts for a title before
+// creating the window. Defaults to true.
+func newAgentPromptSetting(cfg appConfig) bool {
+	return derefBool(cfg.NewAgentPrompt, true)
+}
+
+// stripDatePrefixSetting reports whether a leading YYYY-MM-DD- is stripped from
+// the window name/title segment. Defaults to true.
+func stripDatePrefixSetting(cfg appConfig) bool {
+	return derefBool(cfg.StripDatePrefix, true)
+}
+
+// windowNavSizeSetting returns the prefix-w popup width tier, defaulting to "wide".
+func windowNavSizeSetting(cfg appConfig) string {
+	switch strings.TrimSpace(cfg.WindowNavSize) {
+	case "standard", "full":
+		return strings.TrimSpace(cfg.WindowNavSize)
+	default:
+		return "wide"
+	}
+}
+
+// maybeStripDatePrefix removes a leading YYYY-MM-DD- from s when enabled.
+func maybeStripDatePrefix(s string, enabled bool) string {
+	if !enabled {
+		return s
+	}
+	return datePrefixRe.ReplaceAllString(s, "")
 }
 
 func layoutDefaultSetting(cfg appConfig) string {
@@ -110,6 +194,72 @@ func cycleIconSet() (string, error) {
 			cfg.IconSet = ""
 		} else {
 			cfg.IconSet = next
+		}
+	})
+	return next, err
+}
+
+// cyclePollInterval advances 1s→3s→10s→1s among the presets and persists it.
+// Custom (non-preset) values are set via setPollInterval from the editable input.
+func cyclePollInterval() (string, error) {
+	next := ""
+	err := updateAppConfig(func(cfg *appConfig) {
+		next = nextInCycle(pollIntervalSetting(*cfg), []string{"1s", "3s", "10s"})
+		if next == "3s" {
+			cfg.PollInterval = ""
+		} else {
+			cfg.PollInterval = next
+		}
+	})
+	return next, err
+}
+
+// setPollInterval validates a free-form interval string and persists it. Empty
+// or "3s" clears the key (default). Rejects values that don't parse.
+func setPollInterval(value string) error {
+	v := strings.TrimSpace(value)
+	if v == "" || v == "3s" {
+		return updateAppConfig(func(cfg *appConfig) { cfg.PollInterval = "" })
+	}
+	if _, ok := parsePollInterval(v); !ok {
+		return fmt.Errorf("invalid interval %q: use 1s/3s/10s, a number of seconds, or a Go duration", v)
+	}
+	return updateAppConfig(func(cfg *appConfig) { cfg.PollInterval = v })
+}
+
+// toggleNewAgentPrompt flips the prefix-] title prompt on/off and persists it.
+func toggleNewAgentPrompt() error {
+	return updateAppConfig(func(cfg *appConfig) {
+		enabled := newAgentPromptSetting(*cfg)
+		if enabled {
+			cfg.NewAgentPrompt = boolPtr(false)
+		} else {
+			cfg.NewAgentPrompt = nil // default true → keep config clean
+		}
+	})
+}
+
+// toggleStripDatePrefix flips date-prefix stripping on/off and persists it.
+func toggleStripDatePrefix() error {
+	return updateAppConfig(func(cfg *appConfig) {
+		enabled := stripDatePrefixSetting(*cfg)
+		if enabled {
+			cfg.StripDatePrefix = boolPtr(false)
+		} else {
+			cfg.StripDatePrefix = nil // default true → keep config clean
+		}
+	})
+}
+
+// cycleWindowNavSize advances standard→wide→full→standard and persists it.
+func cycleWindowNavSize() (string, error) {
+	next := ""
+	err := updateAppConfig(func(cfg *appConfig) {
+		next = nextInCycle(windowNavSizeSetting(*cfg), []string{"standard", "wide", "full"})
+		if next == "wide" {
+			cfg.WindowNavSize = ""
+		} else {
+			cfg.WindowNavSize = next
 		}
 	})
 	return next, err
@@ -285,7 +435,7 @@ func run(args []string) error {
 
 func runTmuxCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|status-position>")
+		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|status-position|new-agent-prompt|window-nav-size>")
 	}
 	switch args[0] {
 	case "on-focus":
@@ -301,6 +451,16 @@ func runTmuxCommand(args []string) error {
 		return nil
 	case "status-position":
 		fmt.Println(statusPositionSetting(loadAppConfig()))
+		return nil
+	case "new-agent-prompt":
+		if newAgentPromptSetting(loadAppConfig()) {
+			fmt.Println("on")
+		} else {
+			fmt.Println("off")
+		}
+		return nil
+	case "window-nav-size":
+		fmt.Println(windowNavSizeSetting(loadAppConfig()))
 		return nil
 	default:
 		return fmt.Errorf("unknown tmux subcommand: %s", args[0])

@@ -166,9 +166,9 @@ Timer 的墙上时间默认使用**东八区（UTC+8）**。可在 `Alt-s → Se
 
 ### 触发机制
 
-最多每 5 秒轮询所有 timer（挂在 `agent tmux sync-names` 周期心跳上），到点就向该 window 的 ai pane `tmux send-keys` 内容（可选回车）；按 Loop / Max 决定是否再排下次或停用。一个「其它 window 的 timer」始终 fire 到它**自己的** window，不受你在哪看面板影响。
+按 **General → Poll interval**（默认 3s，可配 1s/3s/10s 或自定义）轮询所有 timer（挂在 `agent tmux sync-names` 周期心跳上），到点就向该 window 的 ai pane `tmux send-keys` 内容（可选回车，内容与回车之间留 ~150ms 间隔避免漏提交）；按 Loop / Max 决定是否再排下次或停用。一个「其它 window 的 timer」始终 fire 到它**自己的** window，不受你在哪看面板影响。
 
-**注入前清场**：fire 时若 pane 屏幕上正显示 Claude 的额度弹窗（usage limit dialog，会吞掉注入的按键），先发一个 `Escape` 关掉再打字。只在「屏幕匹配到额度弹窗文案且会话非 busy」时才发 Esc——busy 时发 Esc 会打断正在生成的 turn，绝不盲发。
+**注入前清场**：fire 时若 pane 屏幕上正显示 Claude 的额度弹窗（usage limit dialog，会吞掉注入的按键），先发一个 `Escape` 关掉、等 ~500ms 再打字。**绝不盲发 Esc**——仅当「capture-pane 屏幕**匹配到**额度弹窗文案」**且**「该 pane 的 Claude 与 Codex 会话**都非 busy**」时才发（两个条件缺一不发）。busy 时发 Esc 会打断正在生成的 turn；无弹窗时发 Esc 可能清掉用户未提交的草稿或干扰 asking/waiting 提示，故都禁止。判定抽成纯函数 `shouldDismissUsageDialog`（`quota.go`，带单测）。
 
 ### `reset` 触发：额度重置后自动开始
 

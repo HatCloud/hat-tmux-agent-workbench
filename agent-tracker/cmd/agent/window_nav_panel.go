@@ -55,6 +55,10 @@ type windowNavPanelModel struct {
 	selected     int
 	scrollOffset int
 
+	// stripDatePrefix mirrors the strip_date_prefix setting: drop a leading
+	// YYYY-MM-DD- from the Name column (matches the tmux tab / notify name).
+	stripDatePrefix bool
+
 	// grouping / ordering
 	groupBy  string // "session", "none", "status", "path", "attention"
 	orderBy  string // "activity", "index"
@@ -123,8 +127,10 @@ type windowNavPanelModel struct {
 // ── constructor ───────────────────────────────────────────────────────────────
 
 func newWindowNavPanelModel() *windowNavPanelModel {
-	groupBy, orderBy, orderDir := windowNavSettings(loadAppConfig())
+	cfg := loadAppConfig()
+	groupBy, orderBy, orderDir := windowNavSettings(cfg)
 	m := &windowNavPanelModel{
+		stripDatePrefix:        stripDatePrefixSetting(cfg),
 		groupBy:                groupBy,
 		orderBy:                orderBy,
 		orderDir:               orderDir,
@@ -1200,6 +1206,12 @@ func (m *windowNavPanelModel) render(styles paletteStyles, width, height int) st
 		footer, footerLines = renderWrappedShortcutFooter(width-2, renderSeg, 2,
 			[][2]string{{"j/k", "nav"}, {"0-9", "jump"}, {"Enter", "sel"}, {"Esc", "back"}, {"f", "search"}, {"p", "prompt"}, {"t", "timer"}, {"g", m.groupBy}, {"o", "order"}, {"r", "flip"}, {"x", "del"}},
 		)
+		// When the hints wrap to two rows, insert a blank spacer line between them
+		// so the two rows aren't cramped together (a wide popup keeps them on one).
+		if footerLines == 2 {
+			footer = strings.Replace(footer, "\n", "\n\n", 1)
+			footerLines = 3
+		}
 	}
 
 	headerLines := len(headerParts)
@@ -1504,6 +1516,9 @@ func (m *windowNavPanelModel) renderRow(styles paletteStyles, row windowNavRow, 
 		suffix := " (" + normalizeModelNameLong(row.agentModel) + ")"
 		displayName = strings.TrimSuffix(row.windowName, suffix)
 	}
+	// Match the tmux tab: drop a leading YYYY-MM-DD- when the setting is on, and
+	// strip control chars / '#' (agentTitle may be a raw user-typed title).
+	displayName = maybeStripDatePrefix(sanitizeWindowMarker(displayName), m.stripDatePrefix)
 	// Column widths are responsive: narrow popups drop model/provider/dir/time.
 	const (
 		providerWidth = 9

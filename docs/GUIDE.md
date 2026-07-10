@@ -525,6 +525,17 @@ python3 ~/.hat-config/scripts/agent_tracker.py ack
 - 通知分组：同页 **Notification grouping**——`single`（默认，新通知替换旧、只留一条）/ `per_window`（每窗口一条独立通知、并发共存；聚焦某窗口时会像灭 🔔 一样自动消掉它的通知）。
 - 第三方 `agent-tracker` 的完整 Go daemon（`tracker-server`）+ `tracker-mcp`（MCP）+ palette/TUI + Claude Code hooks 整套已移植。
 
+### General 设置补充项（`alt-s` → Settings → General）
+
+除上面的 Notifications / Notification grouping / Default layout / Status bar position / Icon set / Timer timezone 外，另有 4 项：
+
+- **Poll interval**（默认 `3s`）：window 自动命名 + 状态/🔔 刷新的主轮询节奏。状态栏每秒触发一次，但只按此间隔真正跑一遍完整 sync（导航 hook 仍即时）。`Enter` 在 `1s`/`3s`/`10s` 间循环，`Space` 打开自由输入（支持 `1s`/`10s` 这类 Go duration、裸数字秒如 `5`，非法值回退 3s，钳制到 500ms–60s）。改后无需重启 daemon。
+- **New agent prompt**（默认 ON）：ON 时 `prefix ]` 先弹一个小窗让你输窗口标题（空 = 自动命名）再建窗；OFF 时直接建窗（旧行为）。`prefix [`（目录选择）不受影响。标题会写进 `@agent_title`、走 date-strip + 自动命名拼成 `[status] 项目/标题 (model)`。
+- **Strip date prefix**（默认 ON）：从窗口名/标题段剥掉前导 `YYYY-MM-DD-`，例如 `2026-07-09-open-source-refactor` 在 tmux 状态栏、通知标题、Window Nav 的 Name 列都显示为 `open-source-refactor`。OFF 时保留日期。
+- **Window nav size**（默认 `wide`）：`prefix w` 窗口导航弹窗宽度档位——`standard`（紧凑，~140 cap）/ `wide`（默认，~180 cap，够宽让底部提示行单行显示、Name 列留足宽度）/ `full`（~96% client 宽）。
+
+> **未来可配置（backlog，暂未实现，仅记录）**：completion grace window（busy→idle 完成去抖，现固定 2s）、remote-bell interval（现固定 3s）、workspace-save interval、window-title 最大长度、auto-rename 总开关、通知声音。
+
 仍部分依赖手动：summary 文本由上报方传入或缺省（未做 AI 输出自动提取）。
 
 ## 5. AI session 具备哪些能力
