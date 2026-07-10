@@ -14,6 +14,8 @@ daemon 自动命名并追踪这些窗口的状态，在 tmux 状态栏呈现 ⏳
 所有能力都通过 `scripts/deploy.sh`（或上层的 `scripts/setup` 向导）接入真实 tmux
 环境，也可干净卸载。
 
+![Hat Config 工作台——agent 命令面板、git 面板与 tmux 状态栏](./assets/screenshot.png)
+
 ## 运行要求
 
 仅支持 macOS。daemon 依赖 launchd、Carbon（输入源切换）与 `lsappinfo`，因此

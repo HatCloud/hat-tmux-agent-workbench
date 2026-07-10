@@ -17,6 +17,8 @@ bar, and can snapshot/restore whole workspaces after a crash.
 Everything is deployed into a live tmux environment through `scripts/deploy.sh`
 (or the higher-level `scripts/setup` wizard), and can be cleanly uninstalled.
 
+![Hat Config workbench — agent command palette, git pane, and tmux status bar](./assets/screenshot.png)
+
 ## Requirements
 
 macOS only. The daemon uses launchd, Carbon (input-source switching), and
