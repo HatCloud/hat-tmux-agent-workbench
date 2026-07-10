@@ -1,5 +1,7 @@
 # Hat Config — tmux + AI agent terminal workbench
 
+**English** · [简体中文](./README.zh-CN.md)
+
 A personal tmux workflow for driving AI coding agents (Claude Code, Codex, and
 custom providers) from the terminal. It gives each agent a three-pane window
 (agent / git / run), auto-names and status-tracks those windows from a small Go
@@ -8,14 +10,6 @@ bar, and can snapshot/restore whole workspaces after a crash.
 
 Everything is deployed into a live tmux environment through `scripts/deploy.sh`
 (or the higher-level `scripts/setup` wizard), and can be cleanly uninstalled.
-
-### 中文对照
-
-面向终端的 tmux + AI agent 工作流：为每个 agent（Claude Code / Codex / 自定义
-provider）开三 pane 窗口（agent / git / run），由一个小型 Go daemon 自动命名和
-状态追踪，在 tmux 状态栏显示 ⏳/🔔 任务状态并发系统通知，还能在崩溃后快照 / 恢复
-整个 workspace。全部经 `scripts/deploy.sh`（或上层 `scripts/setup` 向导）接入真实
-tmux 环境，也可干净卸载。
 
 ## Requirements
 
@@ -46,14 +40,6 @@ Dependencies (detected by `scripts/setup`):
 Missing optional dependencies only degrade the corresponding feature; missing
 required ones abort the install.
 
-### 中文对照
-
-仅支持 macOS（daemon 依赖 launchd、Carbon 输入源切换、`lsappinfo`）。安装路径硬编码
-为 `~/.hat-config`（见 `agent-tracker/internal/paths/paths.go`——二进制、socket、运行时
-状态都落在该目录下），请把仓库 clone 到那里。必需依赖 `tmux`(≥3.3)/`go`/`fzf`/`jq`，
-可选依赖 `z`/`lazygit`/`terminal-notifier`/`gh`；可选依赖缺失只降级对应能力，必需依赖
-缺失则中止安装。
-
 ## Installation footprint
 
 Deploying touches six places outside the repo. Each is an independent, opt-out
@@ -73,15 +59,6 @@ step (see the `--skip-*` flags below); uninstall reverses every one of them.
    `~/.hat-env/shared/alias-common` (or, absent that, a managed block in
    `~/.zshrc`).
 
-### 中文对照
-
-部署会改动仓库之外的六处，每处都是独立、可跳过的步骤（对应下方 `--skip-*` 开关），
-卸载会逐一还原：① `~/.tmux.conf` 的 managed block；② launchd daemon
-`app.hat-tmux-workbench.agent-tracker`；③ launchd workspace 自动存档定时器
-`app.hat-tmux-workbench.workspace-save`（每 180s）；④ `~/.claude/settings.json` 的
-Claude Stop hook；⑤ `~/.claude/settings.json` 的 Claude statusLine 注册；⑥ shell alias
-`agent` / `tmux-resume`。
-
 ## Quick start
 
 Run the setup wizard — it checks dependencies, picks an icon set and keymap
@@ -97,12 +74,6 @@ unless you opt in). See the full flag list with:
 ```bash
 ~/.hat-config/scripts/setup --help
 ```
-
-### 中文对照
-
-运行 `scripts/setup` 向导：检查依赖、选图标集与键位预设、披露六处侵入点，再交给
-`deploy.sh` 执行。也支持非交互模式（CI 安全，非交互下侵入步骤默认全跳过、需显式
-opt-in）；`scripts/setup --help` 查看完整 flag。
 
 ## Manual install
 
@@ -138,14 +109,6 @@ first. One-line instruction template:
 
 `agent-guide` emits a static JSON contract and performs no intrusive action.
 
-### 中文对照
-
-`deploy.sh` 可脱离向导直接用：`install --yes`（安装/更新同一路径）、`status`（查看
-部署状态）。六个步骤各自可用 `--skip-*` 独立跳过，install/uninstall 对称。**AI 部署**：
-先让 agent 跑 `scripts/setup agent-guide` 读机读契约（flags / 决策点 / JSONL schema），
-再以显式 `--<step>=install` 跑 `scripts/setup --non-interactive --json` 并回报
-`{"result": …}`；`agent-guide` 只输出静态 JSON、不执行任何侵入动作。
-
 ## Private overlay
 
 Machine-local and personal files live in a gitignored overlay so the public repo
@@ -161,15 +124,6 @@ and daemon read them in place.
 > destructive clean, and prefer `git clean -fd` (without `-x`) if you only mean
 > to drop untracked *tracked-candidate* files.
 
-### 中文对照
-
-机器本地与个人文件放在 gitignore 的 overlay 里，保持公开仓干净：`private/`（含 setup
-键位模块产出的 `private/keymap.conf` 与个人文档）、仓根 `CLAUDE.md`、`.tasks/`、
-`snippets/private/` 与 `snippets/.favorites`、`agent-tracker/agent-config.json`。这些
-永不提交，由向导和 daemon 就地读取。**警告**：`git clean -fdx` 会删除 gitignore 文件，
-即会抹掉整个私有 overlay；执行任何破坏性 clean 前先备份（Syncthing versioning 或个人
-备份），只想清理未跟踪文件时优先用不带 `-x` 的 `git clean -fd`。
-
 ## Uninstall
 
 ```bash
@@ -180,12 +134,6 @@ This reverses all six footprint steps (removes the managed tmux block, boots out
 both launchd jobs, strips the Claude Stop hook and statusLine, and removes the
 shell aliases). `--keep-state` preserves runtime state under
 `~/.hat-config/state/`; use `--remove-state` to delete it.
-
-### 中文对照
-
-`deploy.sh uninstall` 反向还原全部六处（移除 managed block、bootout 两个 launchd job、
-剥离 Claude Stop hook 与 statusLine、删除 shell alias）。`--keep-state` 保留
-`~/.hat-config/state/` 运行时状态，`--remove-state` 则删除。
 
 ## Documentation
 
