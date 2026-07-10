@@ -28,8 +28,15 @@ case "$size" in
 esac
 popup_h=$(( _rawh > _caph ? _caph : _rawh ))
 
+# Pass the popup's INNER dimensions (minus the 1-col border on each side) so the
+# panel sizes its columns correctly even if the popup's WindowSizeMsg is late/zero.
+inner_w=$(( popup_w - 2 > 20 ? popup_w - 2 : popup_w ))
+inner_h=$(( popup_h - 2 > 5 ? popup_h - 2 : popup_h ))
+
 exec tmux display-popup -E -w "$popup_w" -h "$popup_h" -T " Windows " \
   ~/.hat-config/agent-tracker/bin/agent windows \
   --window="$window_id" \
   --path="$path_value" \
-  --session-name="$session_name"
+  --session-name="$session_name" \
+  --width="$inner_w" \
+  --height="$inner_h"

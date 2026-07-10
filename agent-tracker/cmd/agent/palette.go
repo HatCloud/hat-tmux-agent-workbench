@@ -123,14 +123,27 @@ func runWindowNavDirect(args []string) error {
 	// parse --window / --session-name / --path flags for current session context
 	fs := flag.NewFlagSet("agent windows", flag.ContinueOnError)
 	var windowID, sessionName, currentPath string
+	var initW, initH int
 	fs.StringVar(&windowID, "window", "", "current window id")
 	fs.StringVar(&sessionName, "session-name", "", "current session name")
 	fs.StringVar(&currentPath, "path", "", "current pane path")
+	// The launching popup script (open_window_nav.sh) knows the popup dimensions
+	// authoritatively; pass them so the Name column has the right width even when
+	// the display-popup's WindowSizeMsg is late/zero.
+	fs.IntVar(&initW, "width", 0, "initial popup width in columns")
+	fs.IntVar(&initH, "height", 0, "initial popup height in rows")
 	fs.SetOutput(nil)
 	_ = fs.Parse(args)
 	_ = windowID
 	_ = sessionName
 	_ = currentPath
+	if initW > 0 {
+		panel.width = initW
+		panel.sizeLocked = true // popup is fixed-size; ignore misreported WindowSizeMsg
+	}
+	if initH > 0 {
+		panel.height = initH
+	}
 
 	p := tea.NewProgram(panel, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()

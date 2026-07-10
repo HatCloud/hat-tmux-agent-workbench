@@ -88,6 +88,11 @@ type windowNavPanelModel struct {
 	requestBack  bool
 	requestClose bool
 	directMode   bool // true when run as standalone (agent windows), false when embedded in palette
+	// sizeLocked pins width/height to the launch-time --width/--height (the popup
+	// script knows them authoritatively). Inside a tmux display-popup bubbletea's
+	// WindowSizeMsg misreports the size, collapsing the Name column; when locked
+	// we ignore those messages (a display-popup is fixed-size anyway).
+	sizeLocked bool
 
 	// inline status message
 	statusMsg   string
@@ -731,8 +736,17 @@ func (m *windowNavPanelModel) Init() tea.Cmd {
 func (m *windowNavPanelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		// In a display-popup the size is pinned to the launch-time --width/--height
+		// (bubbletea's popup WindowSizeMsg misreports and would collapse the Name
+		// column). Only honor real resize events when not locked.
+		if !m.sizeLocked {
+			if msg.Width > 0 {
+				m.width = msg.Width
+			}
+			if msg.Height > 0 {
+				m.height = msg.Height
+			}
+		}
 	case windowNavTickMsg:
 		// save selected windowID so we can restore it after refresh
 		selectedWID := ""
