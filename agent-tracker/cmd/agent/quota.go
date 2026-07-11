@@ -243,8 +243,13 @@ func codexRateLimitsFromRollout(path string) (codexRateLimits, bool) {
 		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
 			continue
 		}
+		// Codex logs a separate token_count snapshot per limit_id (e.g. "codex"
+		// vs "premium"); categories the account isn't currently metering come
+		// through with both windows null. Skip those so they don't clobber the
+		// last snapshot that actually carried usage.
 		if entry.Type == "event_msg" && entry.Payload.Type == "token_count" &&
-			entry.Payload.RateLimits != nil {
+			entry.Payload.RateLimits != nil &&
+			(entry.Payload.RateLimits.Primary != nil || entry.Payload.RateLimits.Secondary != nil) {
 			rl, found = *entry.Payload.RateLimits, true
 		}
 	}
@@ -275,6 +280,28 @@ func latestCodexRolloutPath() string {
 	return newest
 }
 
+// codexExhaustedResetAt reports the reset instant Codex must wait for because a
+// rate window is actually exhausted (>= quotaExhaustedPercent), taking the
+// latest among any exhausted windows. Unlike pickCodexReset it does NOT fall
+// back to an un-exhausted window's boundary — a zero/false result here means
+// codex is not currently blocked, mirroring Claude's 429-only detection. This
+// drives the "limited" ([L]) status.
+func codexExhaustedResetAt(rl codexRateLimits, now time.Time) (time.Time, bool) {
+	var exhausted time.Time
+	for _, w := range []*codexRateWindow{rl.Primary, rl.Secondary} {
+		if w == nil || w.UsedPercent < quotaExhaustedPercent || w.ResetsAt <= 0 {
+			continue
+		}
+		if at := time.Unix(w.ResetsAt, 0); at.After(now) && at.After(exhausted) {
+			exhausted = at
+		}
+	}
+	if exhausted.IsZero() {
+		return time.Time{}, false
+	}
+	return exhausted, true
+}
+
 // pickCodexReset chooses which resets_at to wait for: every exhausted window
 // (>= quotaExhaustedPercent) must reopen before work resumes, so take the
 // latest among them; when none is exhausted fall back to the shortest window's
@@ -290,15 +317,7 @@ func pickCodexReset(rl codexRateLimits, now time.Time) (time.Time, bool) {
 	if len(windows) == 0 {
 		return time.Time{}, false
 	}
-	var exhausted time.Time
-	for _, w := range windows {
-		if w.UsedPercent >= quotaExhaustedPercent {
-			if at := time.Unix(w.ResetsAt, 0); at.After(exhausted) {
-				exhausted = at
-			}
-		}
-	}
-	if !exhausted.IsZero() {
+	if exhausted, ok := codexExhaustedResetAt(rl, now); ok {
 		return exhausted, true
 	}
 	best := windows[0]
@@ -308,6 +327,23 @@ func pickCodexReset(rl codexRateLimits, now time.Time) (time.Time, bool) {
 		}
 	}
 	return time.Unix(best.ResetsAt, 0), true
+}
+
+// codexLimitResetFromMeta reports whether the codex thread's rate_limits
+// snapshot shows an exhausted window right now, and when it resets. Mirrors
+// claudeLimitResetFromSession's role for the Claude branch. Falls back to the
+// most recently written rollout when the thread has none recorded (quota is
+// account-wide, so any fresh snapshot reflects the same limits).
+func codexLimitResetFromMeta(meta codexThreadMeta, now time.Time) (time.Time, bool) {
+	path := meta.RolloutPath
+	if strings.TrimSpace(path) == "" {
+		path = latestCodexRolloutPath()
+	}
+	rl, ok := codexRateLimitsFromRollout(path)
+	if !ok {
+		return time.Time{}, false
+	}
+	return codexExhaustedResetAt(rl, now)
 }
 
 // ── Claude statusline rate-limits cache (fallback estimate) ─────────────────

@@ -789,6 +789,21 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
 			_ = runTmux("set", "-w", "-t", windowID, "@agent_model", model)
 		}
+		// A codex thread whose latest rate_limits snapshot shows an exhausted
+		// window is its own "limited" status ([L]), mirroring the Claude 429
+		// probe above: the reset instant is stamped on the window so the same
+		// sync pass (task reconcile) and other consumers reuse it.
+		if !strings.EqualFold(liveStatus, "busy") {
+			if resetAt, ok := codexLimitResetFromMeta(codexMeta, time.Now()); ok {
+				liveStatus = "limited"
+				stamp := strconv.FormatInt(resetAt.Unix(), 10)
+				if tmuxWindowOption(windowID, "@agent_limit_reset_at") != stamp {
+					_ = runTmux("set", "-w", "-t", windowID, "@agent_limit_reset_at", stamp)
+				}
+			} else if tmuxWindowOption(windowID, "@agent_limit_reset_at") != "" {
+				_ = runTmux("set", "-wu", "-t", windowID, "@agent_limit_reset_at")
+			}
+		}
 	} else {
 		// No live claude/codex in this window.
 		if client != "" {
@@ -1144,7 +1159,14 @@ func runTmuxSyncNames(args []string) error {
 				if meta.Title != "" {
 					_ = runTmux("set", "-w", "-t", windowID, "@agent_title", meta.Title)
 				}
-				reconcileTaskStatus(sessionID, windowID, aiPane, meta.Title, meta.Status, taskByPane[aiPane])
+				// Reuse the limited probe agentWindowName stamped above so the
+				// daemon sees "limited" (asking-like) instead of idle→completed.
+				status := meta.Status
+				if _, limited := windowQuotaLimitedUntil(windowID); limited &&
+					!strings.EqualFold(status, "busy") {
+					status = "limited"
+				}
+				reconcileTaskStatus(sessionID, windowID, aiPane, meta.Title, status, taskByPane[aiPane])
 			}
 		}
 	}
