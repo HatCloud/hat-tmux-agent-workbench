@@ -35,8 +35,9 @@ default_provider="$(cat "$HOME/.claude/config/default-provider" 2>/dev/null || e
 build_options() {
   printf 'Claude Code · 默认 (%s)\n' "$default_provider"
   local env p
-  for env in "$HOME"/.claude/providers/*.env; do
+  for env in "$HOME"/.hat-env/providers/*.env; do
     [[ -e "$env" ]] || continue
+    grep -qiE '^[[:space:]]*(export[[:space:]]+)?HAT_PROVIDER_DISABLED[[:space:]]*=[[:space:]]*"?true"?' "$env" && continue
     p="$(basename "$env" .env)"
     printf 'Claude Code · %s\n' "$p"
   done

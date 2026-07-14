@@ -586,12 +586,16 @@ func statusTag(status string) string {
 	}
 }
 
-// loadProviderMap reads ~/.claude/providers/*.env into a map from the provider's
+// providersRelDir is the provider .env directory relative to home
+// (HAT-574: 迁入 ~/.hat-env/providers 单一真身).
+const providersRelDir = ".hat-env/providers"
+
+// loadProviderMap reads ~/.hat-env/providers/*.env into a map from the provider's
 // ANTHROPIC_BASE_URL to its name (file basename). official unsets the URL and so
 // is absent (treated as the empty-URL default).
 func loadProviderMap() map[string]string {
 	m := map[string]string{}
-	entries, err := os.ReadDir(filepath.Join(homeDir(), ".claude", "providers"))
+	entries, err := os.ReadDir(filepath.Join(homeDir(), providersRelDir))
 	if err != nil {
 		return m
 	}
@@ -599,7 +603,7 @@ func loadProviderMap() map[string]string {
 		if !strings.HasSuffix(e.Name(), ".env") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(homeDir(), ".claude", "providers", e.Name()))
+		data, err := os.ReadFile(filepath.Join(homeDir(), providersRelDir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -1781,7 +1785,7 @@ func modelFromProviderEnv(provider string) string {
 	if provider == "" {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(homeDir(), ".claude", "providers", provider+".env"))
+	data, err := os.ReadFile(filepath.Join(homeDir(), providersRelDir, provider+".env"))
 	if err != nil {
 		return ""
 	}
