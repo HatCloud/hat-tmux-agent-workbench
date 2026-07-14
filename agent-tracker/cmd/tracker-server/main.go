@@ -102,10 +102,18 @@ type server struct {
 	// notification mirroring a remote machine's 🔔, so it can be removed when the
 	// remote bell clears or the window closes. See remote_bell.go.
 	remoteBellNotified map[string]bool
+
+	// Refresh coalescers merge bursts of events into bounded work: a sync pass
+	// reconciling many windows fans out into one broadcast + one status refresh
+	// instead of one each. detectCoalescer drives event-driven sync-names runs
+	// off the session-file watcher (see watcher.go).
+	broadcastCoalescer *coalescer
+	refreshCoalescer   *coalescer
+	detectCoalescer    *coalescer
 }
 
 func newServer() *server {
-	return &server{
+	s := &server{
 		socketPath:            socketPath(),
 		notificationsEnabled:  true,
 		notificationGroupMode: notificationGroupSingle,
@@ -115,6 +123,12 @@ func newServer() *server {
 		notifiedWindows:       make(map[string]bool),
 		remoteBellNotified:    make(map[string]bool),
 	}
+	// Small window for the UI-facing refreshes (imperceptible latency, still
+	// merges a same-tick burst); a larger one for the heavier sync-names run.
+	s.broadcastCoalescer = newCoalescer(150*time.Millisecond, s.broadcastState)
+	s.refreshCoalescer = newCoalescer(150*time.Millisecond, s.doStatusRefresh)
+	s.detectCoalescer = newCoalescer(400*time.Millisecond, s.triggerSyncNames)
+	return s
 }
 
 func main() {
@@ -149,6 +163,10 @@ func (s *server) run() error {
 
 	// Mirror remote machines' 🔔 onto their local ssh windows (see remote_bell.go).
 	go s.pollRemoteBells()
+
+	// Event-driven detection: react to Claude session-file changes in ~ms instead
+	// of only at the periodic poll (see watcher.go).
+	go s.watchSessionFilesLoop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -914,7 +932,7 @@ func isGenericCompletionNote(note string) bool {
 }
 
 func (s *server) broadcastStateAsync() {
-	go s.broadcastState()
+	s.broadcastCoalescer.trigger()
 }
 
 func (s *server) broadcastState() {
@@ -941,11 +959,16 @@ func (s *server) broadcastState() {
 }
 
 func (s *server) statusRefreshAsync() {
-	go func() {
-		if err := runTmux("refresh-client", "-S"); err != nil {
-			log.Printf("status refresh error: %v", err)
-		}
-	}()
+	s.refreshCoalescer.trigger()
+}
+
+// doStatusRefresh re-renders the tmux status bar. Run by refreshCoalescer, so
+// concurrent state changes collapse into a single refresh-client instead of one
+// tmux subprocess per event.
+func (s *server) doStatusRefresh() {
+	if err := runTmux("refresh-client", "-S"); err != nil {
+		log.Printf("status refresh error: %v", err)
+	}
 }
 
 func (s *server) sendState(enc *json.Encoder) {

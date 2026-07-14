@@ -1139,9 +1139,15 @@ func syncNamesLastStartPath() string {
 
 // acquireSyncNamesLock uses a kernel flock instead of a mkdir/PID lock. The
 // kernel releases it automatically if the process exits or is killed, so a crash
-// cannot leave sync-names permanently disabled. An overlapping trigger is
-// coalesced rather than queued, bounding the worker count at one.
-func acquireSyncNamesLock(path string) (release func(), acquired bool, err error) {
+// cannot leave sync-names permanently disabled.
+//
+// blocking=false (periodic/nav triggers): an overlapping trigger is dropped
+// rather than queued, bounding the worker count at one — the in-flight pass
+// already covers it. blocking=true (event-driven --wait): the caller WAITS for
+// the in-flight pass and then runs its own, so a status transition that lands
+// mid-pass (which the in-flight pass read before the change) is still detected
+// promptly instead of waiting for the next periodic tick.
+func acquireSyncNamesLock(path string, blocking bool) (release func(), acquired bool, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, false, err
 	}
@@ -1149,9 +1155,13 @@ func acquireSyncNamesLock(path string) (release func(), acquired bool, err error
 	if err != nil {
 		return nil, false, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	how := syscall.LOCK_EX
+	if !blocking {
+		how |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		_ = f.Close()
-		if err == syscall.EWOULDBLOCK || err == syscall.EAGAIN {
+		if !blocking && (err == syscall.EWOULDBLOCK || err == syscall.EAGAIN) {
 			return nil, false, nil
 		}
 		return nil, false, err
@@ -1181,19 +1191,31 @@ func markSyncNamesStarted(path string, now time.Time) error {
 	return os.WriteFile(path, []byte(strconv.FormatInt(now.UnixNano(), 10)), 0o600)
 }
 
+func hasSyncArg(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 // runTmuxSyncNames re-syncs every window's name from its AI pane's Claude session
 // (or launcher @agent_client). The status bar invokes --periodic every second,
 // which is rate-limited to one full pass per 5s; navigation hooks remain immediate.
 // All callers share a non-blocking kernel lock, so slow passes are coalesced and
 // can never accumulate into a process storm.
 func runTmuxSyncNames(args []string) error {
-	release, acquired, err := acquireSyncNamesLock(syncNamesLockPath())
+	periodic := hasSyncArg(args, "--periodic")
+	// Event-driven callers pass --wait: block for any in-flight pass so a
+	// transition landing mid-pass is still caught this pass, not next tick.
+	wait := hasSyncArg(args, "--wait")
+	release, acquired, err := acquireSyncNamesLock(syncNamesLockPath(), wait)
 	if err != nil || !acquired {
 		return nil
 	}
 	defer release()
 
-	periodic := len(args) > 0 && args[0] == "--periodic"
 	now := time.Now()
 	// The status bar triggers --periodic every second; the configured poll
 	// interval (default 3s) rate-limits how often a full sync pass actually runs,

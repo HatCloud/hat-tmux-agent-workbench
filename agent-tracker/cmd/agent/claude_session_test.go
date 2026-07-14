@@ -21,13 +21,13 @@ func TestStatusTag(t *testing.T) {
 
 func TestSyncNamesSingleFlight(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "sync.lock")
-	releaseFirst, ok, err := acquireSyncNamesLock(lockPath)
+	releaseFirst, ok, err := acquireSyncNamesLock(lockPath, false)
 	if err != nil || !ok {
 		t.Fatalf("first lock claim = ok:%v err:%v, want acquired", ok, err)
 	}
 	defer releaseFirst()
 
-	if releaseSecond, ok, err := acquireSyncNamesLock(lockPath); err != nil || ok {
+	if releaseSecond, ok, err := acquireSyncNamesLock(lockPath, false); err != nil || ok {
 		if releaseSecond != nil {
 			releaseSecond()
 		}
@@ -35,11 +35,49 @@ func TestSyncNamesSingleFlight(t *testing.T) {
 	}
 
 	releaseFirst()
-	releaseThird, ok, err := acquireSyncNamesLock(lockPath)
+	releaseThird, ok, err := acquireSyncNamesLock(lockPath, false)
 	if err != nil || !ok {
 		t.Fatalf("claim after release = ok:%v err:%v, want acquired", ok, err)
 	}
 	releaseThird()
+}
+
+// TestSyncNamesLockBlockingWaits verifies the event-driven (--wait) path blocks
+// for an in-flight holder and then acquires, rather than dropping like the
+// non-blocking path.
+func TestSyncNamesLockBlockingWaits(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "sync.lock")
+	releaseFirst, ok, err := acquireSyncNamesLock(lockPath, false)
+	if err != nil || !ok {
+		t.Fatalf("first lock claim = ok:%v err:%v, want acquired", ok, err)
+	}
+
+	acquired := make(chan func())
+	go func() {
+		release, ok, err := acquireSyncNamesLock(lockPath, true) // blocks until released
+		if err == nil && ok {
+			acquired <- release
+			return
+		}
+		acquired <- nil
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("blocking acquire returned while the lock was held")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case release := <-acquired:
+		if release == nil {
+			t.Fatal("blocking acquire failed after release")
+		}
+		release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking acquire never completed after release")
+	}
 }
 
 func TestSyncNamesPeriodicDue(t *testing.T) {
