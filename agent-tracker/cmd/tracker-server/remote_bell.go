@@ -136,11 +136,12 @@ func remoteHostHasBell(host string) (bell bool, reachable bool) {
 		return false, true
 	}
 	for _, t := range env.Tasks {
-		// Asking: the remote window name carries a "[?]" prefix while the agent
-		// waits for input. This is ground truth (set by the remote's own window
+		// Attention: the remote window name carries "[?]" or "[E]" while the agent
+		// needs input or has stopped on an error. This is ground truth (set by the remote's own window
 		// naming) and independent of the remote's acknowledge bookkeeping — what
 		// matters here is that an agent over there needs input while we're local.
-		if strings.HasPrefix(strings.TrimSpace(t.Window), "[?]") {
+		windowName := strings.TrimSpace(t.Window)
+		if strings.HasPrefix(windowName, "[?]") || strings.HasPrefix(windowName, "[E]") {
 			return true, true
 		}
 		if t.Acknowledged {

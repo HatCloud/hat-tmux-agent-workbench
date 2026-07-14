@@ -32,7 +32,7 @@ type windowNavRow struct {
 	activity       int64
 	bell           bool // attention flag, shown in its own column (independent of status)
 	path           string
-	status         string // activity: "idle", "busy", "asking", "limited", ""
+	status         string // activity: "idle", "busy", "asking", "limited", "error", ""
 	agentDir       string // @agent_dir: abbreviated absolute path
 	agentProvider  string // @agent_provider: official / minimax / … (empty for codex)
 	agentModel     string // @agent_model: sonnet / opus / …
@@ -189,6 +189,8 @@ func parseWindowNavLine(line string) (windowNavRow, bool) {
 		status = "asking"
 	} else if strings.HasPrefix(raw, "[L] ") {
 		status = "limited"
+	} else if strings.HasPrefix(raw, "[E] ") {
+		status = "error"
 	} else if strings.HasPrefix(raw, "[I] ") {
 		status = "idle"
 	}
@@ -235,6 +237,7 @@ func (m *windowNavPanelModel) refresh() {
 	// else started_at for asking) so the pinned "需要处理" group can order by it.
 	type windowCacheState struct {
 		bell, asking bool
+		attention    string
 		since        int64
 	}
 	cacheByWindow := map[string]windowCacheState{}
@@ -254,6 +257,7 @@ func (m *windowNavPanelModel) refresh() {
 				// permission prompt) must not override the live window-name status.
 				if t.Asking && t.Status == "in_progress" {
 					c.asking = true
+					c.attention = t.Attention
 					if !t.Acknowledged {
 						c.bell = true // asking also needs attention until visited
 						if c.since == 0 {
@@ -284,7 +288,9 @@ func (m *windowNavPanelModel) refresh() {
 		// asking is also reflected in status so the "?" persists after the bell is
 		// acknowledged. limited (daemon-side also asking) keeps its more specific "L".
 		cs := cacheByWindow[w.windowID]
-		if cs.asking && w.status != "limited" {
+		if cs.attention == "error" {
+			w.status = "error"
+		} else if cs.asking && w.status != "limited" && w.status != "error" {
 			w.status = "asking"
 		}
 		w.bell = cs.bell || w.bell
@@ -666,13 +672,13 @@ func (m *windowNavPanelModel) updateAttentionSince(wins []windowNavRow, sinceHin
 	}
 }
 
-// windowLivenessTier returns 0 for a live agent window (has an idle/busy/asking
+// windowLivenessTier returns 0 for a live agent window (has a recognized activity
 // session status) and 1 for everything else — a non-agent window or an agent
 // window whose session has exited (status ""). Used as the primary sort key so
 // dead/non-agent windows always sink below live agents.
 func windowLivenessTier(w windowNavRow) int {
 	if w.isAgent && (w.status == "idle" || w.status == "busy" || w.status == "asking" ||
-		w.status == "limited") {
+		w.status == "limited" || w.status == "error") {
 		return 0
 	}
 	return 1
@@ -683,7 +689,7 @@ func (m *windowNavPanelModel) sortWindows(wins []windowNavRow) []windowNavRow {
 	copy(out, wins)
 	sort.SliceStable(out, func(i, j int) bool {
 		// Primary tier (every order mode): live agents — those with a real
-		// session status (idle/busy/asking) — sort above everything else, so a
+		// live session status — sort above everything else, so a
 		// window with no running agent (a non-agent window, or a lingering
 		// @agent_client tag after the agent exited, status "") always sinks to
 		// the bottom instead of leading the list.
@@ -1482,6 +1488,9 @@ func (m *windowNavPanelModel) renderRow(styles paletteStyles, row windowNavRow, 
 	case "limited":
 		statusIcon = "L  "
 		statusFg = lipgloss.Color("203") // red — usage limit hit, blocked
+	case "error":
+		statusIcon = "E  "
+		statusFg = lipgloss.Color("203") // red — turn failed, needs attention
 	case "idle":
 		statusIcon = "I  "
 		statusFg = lipgloss.Color("244") // gray

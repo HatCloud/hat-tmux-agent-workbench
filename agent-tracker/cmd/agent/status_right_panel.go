@@ -278,7 +278,7 @@ func statusRightOrderHint(module string, enabled, available bool) string {
 	switch module {
 	case windowNameOptionStatus:
 		if enabled {
-			return "[B]/[I] status prefix is shown in window name"
+			return "[B]/[I]/[?]/[L]/[E] status prefix is shown in window name"
 		}
 		return "Status prefix is hidden from window name"
 	case windowNameOptionPath:

@@ -47,6 +47,7 @@ func TestParseWindowNavLineFields(t *testing.T) {
 		{"busy prefix", "$1|s|1|@1|[B] x|*|10|0|/p|p|c|m|claude|t", true, "busy", false},
 		{"idle prefix", "$1|s|1|@1|[I] x|*|10|0|/p|||||", true, "idle", false},
 		{"asking prefix", "$1|s|1|@1|[?] x|*|10|0|/p|||||", true, "asking", false},
+		{"error prefix", "$1|s|1|@1|[E] x|*|10|0|/p|||||", true, "error", false},
 		{"native bell", "$1|s|1|@1|plain|*|10|1|/p|||||", true, "", true},
 	}
 	for _, c := range cases {
@@ -65,6 +66,12 @@ func TestParseWindowNavLineFields(t *testing.T) {
 				t.Errorf("bell=%v，期望 %v", w.bell, c.wantBell)
 			}
 		})
+	}
+}
+
+func TestErrorWindowRemainsLive(t *testing.T) {
+	if got := windowLivenessTier(windowNavRow{isAgent: true, status: "error"}); got != 0 {
+		t.Fatalf("error agent liveness tier = %d, want 0", got)
 	}
 }
 

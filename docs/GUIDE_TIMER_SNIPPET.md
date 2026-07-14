@@ -148,7 +148,7 @@ Timer 的墙上时间默认使用**东八区（UTC+8）**。可在 `Alt-s → Se
 
 聚合**其它 live window** 的 timer，每行带该 window 的：
 
-- **状态图标**：`●` busy / `○` idle / `?` asking / `L` limited（额度满）（源自窗口名 `[B]`/`[I]`/`[?]`/`[L]` 前缀）
+- **状态图标**：`●` busy / `○` idle / `?` asking / `L` limited / `E` error（源自窗口名状态前缀）
 - **窗口名字** 和 **目录**（`@agent_dir`）
 
 `Tab` 把焦点切到这栏后，`Enter` 启停 / `e` 编辑 / `x` 删除都作用于所选 timer **所属的 window**（跨窗管理）；`v` 把所选 timer **复制到当前 window**（trigger/loop/max/sendEnter/auto-del 原样克隆）。**已结束（tmux 中已不存在）的 window 的 timer 不显示**。

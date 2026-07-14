@@ -12,6 +12,7 @@ type Envelope struct {
 	Message   string `json:"message,omitempty"`
 	Summary   string `json:"summary,omitempty"`
 	Asking    bool   `json:"asking,omitempty"`
+	Attention string `json:"attention,omitempty"`
 	Tasks     []Task `json:"tasks,omitempty"`
 }
 
@@ -23,6 +24,7 @@ type Task struct {
 	Pane            string  `json:"pane,omitempty"`
 	Status          string  `json:"status"`
 	Asking          bool    `json:"asking,omitempty"`
+	Attention       string  `json:"attention,omitempty"`
 	Summary         string  `json:"summary"`
 	CompletionNote  string  `json:"completion_note,omitempty"`
 	StartedAt       string  `json:"started_at,omitempty"`

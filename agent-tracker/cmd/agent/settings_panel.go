@@ -174,7 +174,7 @@ func (m *windowTitlePanelModel) reload() {
 		{
 			Key:      windowNameOptionStatus,
 			Title:    "Show status",
-			Subtitle: "Show [B] busy / [I] idle prefix in window tab name",
+			Subtitle: "Show [B]/[I]/[?]/[L]/[E] status prefix in window tab name",
 			Enabled:  windowNameShowStatus(cfg),
 		},
 		{

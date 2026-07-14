@@ -138,11 +138,12 @@ agent
 
 agent-tracker 作为 launchd 常驻 daemon（`scripts/deploy.sh install` 自动装），**状态由最多每 5 秒一次的周期轮询（切窗/聚焦时即时触发）读取 `~/.claude/sessions/<pid>.json` 的 `status` 驱动**，无需 hook、无需手动调 `agent_tracker.py`：
 
-- Claude 在干活（busy）→ 窗口名加 **`[B]`** 实时前缀。
-- Claude 空闲（idle）→ 窗口名加 **`[I]`** 前缀；若是「干完一轮」（busy→idle）→ 窗口名后缀 **🔔**（完成待查看）。
+- AI 在干活（busy）→ 窗口名加 **`[B]`** 实时前缀。
+- AI 空闲（idle）→ 窗口名加 **`[I]`** 前缀；若是「干完一轮」（busy→idle）→ 窗口名后缀 **🔔**（完成待查看）。
+- Codex 最终执行错误（capacity、529、请求/网络错误等）→ 窗口名加醒目的 **`[E]`** 前缀，Window Nav 显示红色 `E`，无 busy 动画并抬起 🔔；同 turn 自动恢复或用户重试产生新模型活动后自动回到 `[B]`。
 - 切回/聚焦该 window → 自动标记已读，🔔 消失。
 
-`[B]`/`[I]` 是「此刻在不在干活」的实时状态；🔔 是「干完了你还没看」的未读提醒（聚焦清除）。另有 ❓（pane 待输入，`@op_question_pending`）/❌（`watch_pane.sh` 的 `M-w` 监视失败）来自独立机制。
+`[B]`/`[I]`/`[?]`/`[L]`/`[E]` 是实时状态；🔔 是完成或 attention 的未读提醒。聚焦只清 🔔，不会清仍未恢复的 `[E]`。
 
 > 早期版本曾设计经 MCP + Stop/Notification hook 上报，现已改为 sessions-json 轮询（更可靠、不依赖 `$TMUX_PANE` 与 AI 自觉）。Notification hook 已移除；MCP 与 Stop hook 仍冗余保留（Stop 兼抓 session id）。
 
@@ -520,7 +521,7 @@ python3 ~/.hat-config/scripts/agent_tracker.py ack
 
 - 自动检测 Claude Code 开始/完成（sessions-json 轮询，见 1.5 节）。
 - 自动在 pane focus 时 ack（聚焦 hook 调 `acknowledge`）。
-- 状态变化时系统通知：完成弹「✅ 任务已完成」，转入待回答（权限确认/提问）弹「❓ 有问题需要你回答」。**只在你没看着该窗口时才弹**（和状态栏 🔔 同一逻辑：正看着就不打扰）。点击通知激活终端（Ghostty）并 `tmux switch/select` 跳到对应 session/window/pane。标题用完整格式 `项目/标题 (model)`（无 `[B]`/`[I]` 前缀），不受窗口 tab 名的目录/模型开关影响。
+- 状态变化时系统通知：完成弹「✅ 任务已完成」，转入待回答弹「❓ 有问题需要你回答」，Codex error 弹「⚠️ Codex 执行出错，请查看窗口」。**只在你没看着该窗口时才弹**（和状态栏 🔔 同一逻辑：正看着就不打扰）。点击通知激活终端（Ghostty）并跳到对应 pane；标题不带状态前缀。
 - 通知开关：`alt-s` → Settings → **General** → Notifications（ON/OFF）。关掉后仍保留状态栏 ⏳/🔔 图标，只是不发系统通知。
 - 通知分组：同页 **Notification grouping**——`single`（默认，新通知替换旧、只留一条）/ `per_window`（每窗口一条独立通知、并发共存；聚焦某窗口时会像灭 🔔 一样自动消掉它的通知）。
 - 第三方 `agent-tracker` 的完整 Go daemon（`tracker-server`）+ `tracker-mcp`（MCP）+ palette/TUI + Claude Code hooks 整套已移植。

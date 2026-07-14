@@ -11,7 +11,7 @@ import (
 )
 
 func TestStatusTag(t *testing.T) {
-	cases := map[string]string{"busy": "[B] ", "idle": "[I] ", "BUSY": "[B] ", "": "", "weird": ""}
+	cases := map[string]string{"busy": "[B] ", "shell": "[B] ", "idle": "[I] ", "error": "[E] ", "BUSY": "[B] ", "": "", "weird": ""}
 	for in, want := range cases {
 		if got := statusTag(in); got != want {
 			t.Fatalf("statusTag(%q) = %q, want %q", in, got, want)
@@ -118,10 +118,13 @@ func TestReconcileActions(t *testing.T) {
 		{"busy", "", []reconcileAction{{command: "start_task"}}},
 		{"busy", "in_progress", []reconcileAction{{command: "mark_asking", asking: false}}},
 		// asking/waiting/paused：in_progress 仅 mark_asking{true}；非 in_progress 先 start_task 再 mark_asking{true}（保序）。
-		{"asking", "in_progress", []reconcileAction{{command: "mark_asking", asking: true}}},
-		{"asking", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true}}},
-		{"waiting", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true}}},
-		{"paused", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true}}},
+		{"asking", "in_progress", []reconcileAction{{command: "mark_asking", asking: true, attention: "asking"}}},
+		{"asking", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: "asking"}}},
+		{"waiting", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: "asking"}}},
+		{"paused", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: "asking"}}},
+		{"limited", "in_progress", []reconcileAction{{command: "mark_asking", asking: true, attention: "limited"}}},
+		{"error", "in_progress", []reconcileAction{{command: "mark_asking", asking: true, attention: "error"}}},
+		{"error", "", []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: "error"}}},
 		{"weird", "in_progress", nil},
 		{"weird", "", nil},
 	}
@@ -295,6 +298,131 @@ func TestCodexStatusFromRollout(t *testing.T) {
 	}
 	if got := codexStatusFromRolloutAt(path, now.Add(2*time.Second)); got != "busy" {
 		t.Fatalf("codexStatusFromRollout(tool output) = %q, want busy", got)
+	}
+}
+
+func TestCodexStatusSnapshotTracksRecoverySignals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout.jsonl")
+	now := time.Date(2026, 7, 11, 8, 0, 10, 0, time.UTC)
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-07-11T08:00:00Z","type":"event_msg","payload":{"type":"task_started"}}`+"\n"+
+			`{"timestamp":"2026-07-11T08:00:02Z","type":"event_msg","payload":{"type":"token_count"}}`+"\n"+
+			`{"timestamp":"2026-07-11T08:00:04Z","type":"response_item","payload":{"type":"reasoning"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := codexStatusSnapshotFromRolloutAt(path, now)
+	if snapshot.Status != "busy" {
+		t.Fatalf("snapshot.Status = %q, want busy", snapshot.Status)
+	}
+	wantStart := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
+	if !snapshot.LastTaskStartedAt.Equal(wantStart) {
+		t.Fatalf("LastTaskStartedAt = %v, want %v", snapshot.LastTaskStartedAt, wantStart)
+	}
+	wantProgress := time.Date(2026, 7, 11, 8, 0, 4, 0, time.UTC)
+	if !snapshot.LastProgressAt.Equal(wantProgress) {
+		t.Fatalf("LastProgressAt = %v, want %v", snapshot.LastProgressAt, wantProgress)
+	}
+}
+
+func TestResolveCodexStatusWithTurnError(t *testing.T) {
+	start := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		snapshot codexStatusSnapshot
+		errorAt  time.Time
+		want     string
+	}{
+		{
+			name:     "unresolved error overrides busy",
+			snapshot: codexStatusSnapshot{Status: "busy", LastTaskStartedAt: start, LastProgressAt: start.Add(time.Second)},
+			errorAt:  start.Add(2 * time.Second),
+			want:     "error",
+		},
+		{
+			name:     "task complete bookkeeping does not hide error",
+			snapshot: codexStatusSnapshot{Status: "idle", LastTaskStartedAt: start, LastProgressAt: start.Add(time.Second)},
+			errorAt:  start.Add(2 * time.Second),
+			want:     "error",
+		},
+		{
+			name:     "later model progress clears error",
+			snapshot: codexStatusSnapshot{Status: "busy", LastTaskStartedAt: start, LastProgressAt: start.Add(3 * time.Second)},
+			errorAt:  start.Add(2 * time.Second),
+			want:     "busy",
+		},
+		{
+			name:     "missing error preserves rollout status",
+			snapshot: codexStatusSnapshot{Status: "asking", LastTaskStartedAt: start, LastProgressAt: start.Add(time.Second)},
+			want:     "asking",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveCodexStatus(tc.snapshot, tc.errorAt); got != tc.want {
+				t.Fatalf("resolveCodexStatus() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLatestCodexTurnErrorFromDBFiltersNoise(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 unavailable")
+	}
+	db := filepath.Join(t.TempDir(), "logs.sqlite")
+	schema := `
+		create table logs (
+			id integer primary key autoincrement,
+			ts integer not null,
+			ts_nanos integer not null,
+			level text not null,
+			target text not null,
+			feedback_log_body text,
+			thread_id text
+		);
+		insert into logs(ts,ts_nanos,level,target,feedback_log_body,thread_id) values
+			(100,1,'INFO','codex_core::session::turn','Turn error: stale','thread-a'),
+			(201,2,'DEBUG','codex_core::session::turn','Turn error: debug noise','thread-a'),
+			(202,3,'INFO','codex_core::stream_events_utils','quoted Turn error: noise','thread-a'),
+			(203,4,'INFO','codex_core::session::turn','Turn error: HTTP 529','thread-b'),
+			(204,5,'INFO','codex_core::session::turn','prefix: Turn error: HTTP 529','thread-a');
+	`
+	if out, err := exec.Command("sqlite3", db, schema).CombinedOutput(); err != nil {
+		t.Fatalf("create fixture db: %v: %s", err, out)
+	}
+
+	got, ok := latestCodexTurnErrorFromDB(db, "thread-a", time.Unix(200, 0))
+	if !ok {
+		t.Fatal("expected final turn error")
+	}
+	want := time.Unix(204, 5)
+	if !got.Equal(want) {
+		t.Fatalf("error timestamp = %v, want %v", got, want)
+	}
+	if _, ok := latestCodexTurnErrorFromDB(filepath.Join(t.TempDir(), "missing.sqlite"), "thread-a", time.Time{}); ok {
+		t.Fatal("missing database must degrade without an error signal")
+	}
+}
+
+func TestCodexStatusCacheLoadsThreadOnce(t *testing.T) {
+	cache := codexStatusCache{}
+	meta := codexThreadMeta{ID: "thread-a", RolloutPath: "/tmp/rollout-a.jsonl"}
+	calls := 0
+	load := func(codexThreadMeta) string {
+		calls++
+		return "error"
+	}
+	if got := cache.status(meta, load); got != "error" {
+		t.Fatalf("first cached status = %q", got)
+	}
+	if got := cache.status(meta, load); got != "error" {
+		t.Fatalf("second cached status = %q", got)
+	}
+	if calls != 1 {
+		t.Fatalf("status loader calls = %d, want 1", calls)
 	}
 }
 

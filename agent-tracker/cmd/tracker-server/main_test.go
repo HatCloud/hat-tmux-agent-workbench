@@ -161,6 +161,55 @@ func TestMarkAskingClearsPendingThenRegrace(t *testing.T) {
 	}
 }
 
+func TestMarkTaskAttentionErrorKeepsTaskInProgress(t *testing.T) {
+	s := newTestServer()
+	target := testTarget()
+	task := inProgressTask(s, target)
+	now := time.Now()
+	task.PendingCompleteAt = &now
+
+	if changed := s.markTaskAttention(target, "error"); !changed {
+		t.Fatal("entering error attention should be a state change")
+	}
+	if task.Status != statusInProgress {
+		t.Fatalf("error attention status = %q, want in_progress", task.Status)
+	}
+	if !task.Asking || task.Attention != "error" || task.Acknowledged {
+		t.Fatalf("error attention task = %+v", task)
+	}
+	if task.PendingCompleteAt != nil {
+		t.Fatal("error attention must cancel pending completion")
+	}
+	if changed := s.markTaskAttention(target, "error"); changed {
+		t.Fatal("repeated error attention must not notify again")
+	}
+	task.Acknowledged = true
+	if changed := s.markTaskAttention(target, "asking"); !changed {
+		t.Fatal("error to asking must be a fresh attention transition")
+	}
+	if task.Attention != "asking" || task.Acknowledged {
+		t.Fatalf("asking transition task = %+v", task)
+	}
+	if changed := s.markTaskAttention(target, ""); !changed || task.Asking || task.Attention != "" {
+		t.Fatalf("clear attention changed=%v task=%+v", changed, task)
+	}
+}
+
+func TestAttentionNotificationMessage(t *testing.T) {
+	if got := attentionNotificationMessage("error"); got != "⚠️ Codex 执行出错，请查看窗口" {
+		t.Fatalf("error notification = %q", got)
+	}
+	if got := attentionNotificationMessage("asking"); got != "❓ 有问题需要你回答" {
+		t.Fatalf("asking notification = %q", got)
+	}
+}
+
+func TestStripNotificationStatusPrefixError(t *testing.T) {
+	if got := stripNotificationStatusPrefix("[E] project/title"); got != "project/title" {
+		t.Fatalf("strip error prefix = %q", got)
+	}
+}
+
 // 无 in_progress 任务（含已 completed）的 idle 应 no-op，不创建/不改 completed 任务。
 func TestFinishTaskNoopWhenNoInProgress(t *testing.T) {
 	s := newTestServer()

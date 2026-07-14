@@ -157,11 +157,11 @@ func (m *windowTimerPanelModel) reload() {
 type windowInfo struct {
 	name   string
 	dir    string
-	status string // "busy" | "idle" | "asking" | "limited" | ""
+	status string // "busy" | "idle" | "asking" | "limited" | "error" | ""
 }
 
 // loadWindowInfo maps window_id → windowInfo for all live tmux windows. Status is
-// derived purely from the window-name prefix ([B]/[I]/[?]) the daemon writes, so
+// derived purely from the window-name status prefix the daemon writes, so
 // no tracker-cache read is needed. Windows absent from this map have ended.
 func loadWindowInfo() map[string]windowInfo {
 	info := map[string]windowInfo{}
@@ -183,6 +183,8 @@ func loadWindowInfo() map[string]windowInfo {
 			status = "asking"
 		case strings.HasPrefix(raw, "[L] "):
 			status = "limited"
+		case strings.HasPrefix(raw, "[E] "):
+			status = "error"
 		case strings.HasPrefix(raw, "[I] "):
 			status = "idle"
 		}
@@ -204,6 +206,8 @@ func statusIcon(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("?")
 	case "limited":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("L")
+	case "error":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("E")
 	case "idle":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Render("○")
 	}

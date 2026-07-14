@@ -40,6 +40,58 @@ type appConfig struct {
 	StripDatePrefix *bool `json:"strip_date_prefix,omitempty"`
 	// WindowNavSize: prefix w 弹窗宽度档位（standard/wide/full，空=wide）。
 	WindowNavSize string `json:"window_nav_size,omitempty"`
+	// AutoRetry: agent 撞上可恢复错误（5xx/529 overloaded）停摆时，是否自动 send-keys
+	// 续跑消息重试（默认 false——会往会话注入一条消息，保守起见默认关）。
+	AutoRetry *bool `json:"auto_retry,omitempty"`
+	// AutoRetryMax: 同一错误连续自动重试的次数上限（默认 3）。达到上限停手、留 [E]。
+	AutoRetryMax int `json:"auto_retry_max,omitempty"`
+}
+
+// autoRetrySetting reports whether auto-retry on a recoverable agent error is
+// enabled. Defaults to false (opt-in, since it injects a message into the chat).
+func autoRetrySetting(cfg appConfig) bool {
+	return derefBool(cfg.AutoRetry, false)
+}
+
+// autoRetryMaxSetting returns the per-error retry cap, defaulting to 3 and
+// clamped to [1, 20] so a bad config can't drive an unbounded retry storm.
+func autoRetryMaxSetting(cfg appConfig) int {
+	n := cfg.AutoRetryMax
+	if n <= 0 {
+		n = 3
+	}
+	if n > 20 {
+		n = 20
+	}
+	return n
+}
+
+// toggleAutoRetry flips auto-retry on/off and persists it.
+func toggleAutoRetry() error {
+	return updateAppConfig(func(cfg *appConfig) {
+		if autoRetrySetting(*cfg) {
+			cfg.AutoRetry = boolPtr(false)
+		} else {
+			cfg.AutoRetry = boolPtr(true)
+		}
+	})
+}
+
+// cycleAutoRetryMax advances 3→5→10→3 among the presets and persists it.
+func cycleAutoRetryMax() (int, error) {
+	presets := []int{3, 5, 10}
+	cur := autoRetryMaxSetting(loadAppConfig())
+	next := presets[0]
+	for i, p := range presets {
+		if p == cur {
+			next = presets[(i+1)%len(presets)]
+			break
+		}
+	}
+	if err := updateAppConfig(func(cfg *appConfig) { cfg.AutoRetryMax = next }); err != nil {
+		return 0, err
+	}
+	return next, nil
 }
 
 // pollIntervalSetting returns the configured poll interval string, defaulting to "3s".

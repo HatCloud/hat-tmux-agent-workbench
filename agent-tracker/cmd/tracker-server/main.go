@@ -49,6 +49,7 @@ type taskRecord struct {
 	PendingCompleteAt *time.Time
 	Status            string
 	Asking            bool
+	Attention         string
 	Acknowledged      bool
 }
 
@@ -281,10 +282,16 @@ func (s *server) handleCommand(env ipc.Envelope) error {
 		if err != nil {
 			return err
 		}
-		if changed := s.markTaskAsking(target, env.Asking); changed {
+		attention := strings.TrimSpace(env.Attention)
+		if env.Asking && attention == "" {
+			attention = "asking"
+		} else if !env.Asking {
+			attention = ""
+		}
+		if changed := s.markTaskAttention(target, attention); changed {
 			// Like the 🔔: only alert when the user isn't already watching this window.
 			if env.Asking && s.notificationsAreEnabled() && !windowIsBeingWatched(target.WindowID) {
-				go s.notifyAsking(target)
+				go s.notifyAttention(target, attention)
 			}
 			s.broadcastStateAsync()
 			s.statusRefreshAsync()
@@ -372,6 +379,8 @@ func (s *server) startTask(target tmuxTarget, summary string) error {
 	t.CompletedAt = nil
 	t.CompletionNote = ""
 	t.PendingCompleteAt = nil // 重新活动，作废任何待发完成
+	t.Asking = false
+	t.Attention = ""
 	t.Acknowledged = true
 	return nil
 }
@@ -452,6 +461,7 @@ func (s *server) finishTask(target tmuxTarget, note string) (bool, error) {
 	// 宽限已满：真正提交完成。
 	t.Status = statusCompleted
 	t.Asking = false // a finished task is no longer waiting for input
+	t.Attention = ""
 	t.CompletedAt = &now
 	t.PendingCompleteAt = nil
 	if note != "" {
@@ -469,6 +479,15 @@ func (s *server) finishTask(target tmuxTarget, note string) (bool, error) {
 }
 
 func (s *server) markTaskAsking(target tmuxTarget, asking bool) bool {
+	attention := ""
+	if asking {
+		attention = "asking"
+	}
+	return s.markTaskAttention(target, attention)
+}
+
+func (s *server) markTaskAttention(target tmuxTarget, attention string) bool {
+	attention = strings.TrimSpace(attention)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := taskKey(target.SessionID, target.WindowID, target.PaneID)
@@ -480,10 +499,12 @@ func (s *server) markTaskAsking(target tmuxTarget, asking bool) bool {
 	// 否则 shell/busy 路径（Asking 已为 false、值未变）会在 early-return 处跳过清除，
 	// 让 turn 边界瞬态 idle 留下的 PendingCompleteAt 残留并最终误发完成通知。
 	t.PendingCompleteAt = nil
-	if t.Asking == asking {
+	asking := attention != ""
+	if t.Asking == asking && t.Attention == attention {
 		return false
 	}
 	t.Asking = asking
+	t.Attention = attention
 	if asking {
 		t.Acknowledged = false // entering asking state needs fresh attention
 	}
@@ -723,13 +744,19 @@ func (s *server) notifyResponded(target tmuxTarget) {
 	s.markWindowNotified(target.WindowID)
 }
 
-// notifyAsking fires when a task transitions into the asking/waiting state so
-// the user knows an agent needs an answer to proceed.
-func (s *server) notifyAsking(target tmuxTarget) {
+// attentionNotificationMessage keeps error notifications distinct from questions.
+func attentionNotificationMessage(attention string) string {
+	if attention == "error" {
+		return "⚠️ Codex 执行出错，请查看窗口"
+	}
+	return "❓ 有问题需要你回答"
+}
+
+func (s *server) notifyAttention(target tmuxTarget, attention string) {
 	target = s.fillTargetNamesFromTask(target)
 	title := notificationTitleForTarget(target)
 	action := notificationActionForTarget(target)
-	if err := sendSystemNotification(title, "❓ 有问题需要你回答", action, s.notificationGroup(target.WindowID)); err != nil {
+	if err := sendSystemNotification(title, attentionNotificationMessage(attention), action, s.notificationGroup(target.WindowID)); err != nil {
 		log.Printf("notification error: %v", err)
 		return
 	}
@@ -774,7 +801,7 @@ func notificationTitleForTarget(target tmuxTarget) string {
 				return name
 			}
 		}
-		// Fallback: the live tmux window name minus the [B]/[I] status prefix
+		// Fallback: the live tmux window name minus its agent status prefix
 		// (which the notification text itself already conveys).
 		if out, err := tmuxOutput("display-message", "-t", wid, "-p", "#{window_name}"); err == nil {
 			if name := strings.TrimSpace(stripNotificationStatusPrefix(strings.TrimSpace(out))); name != "" && name != wid {
@@ -808,10 +835,10 @@ func notificationTitleForTarget(target tmuxTarget) string {
 	return "Tracker"
 }
 
-// stripNotificationStatusPrefix removes a leading [B]/[I]/[?]/[L] status marker
+// stripNotificationStatusPrefix removes a leading agent status marker
 // (mirrors the agent's window-name prefix; see claude_session.go).
 func stripNotificationStatusPrefix(name string) string {
-	for _, p := range []string{"[B] ", "[I] ", "[?] ", "[L] "} {
+	for _, p := range []string{"[B] ", "[I] ", "[?] ", "[L] ", "[E] "} {
 		if strings.HasPrefix(name, p) {
 			return strings.TrimPrefix(name, p)
 		}
@@ -1015,6 +1042,7 @@ func (s *server) buildStateEnvelope() *ipc.Envelope {
 			Pane:            t.Pane,
 			Status:          t.Status,
 			Asking:          t.Asking,
+			Attention:       t.Attention,
 			Summary:         t.Summary,
 			CompletionNote:  t.CompletionNote,
 			StartedAt:       started,

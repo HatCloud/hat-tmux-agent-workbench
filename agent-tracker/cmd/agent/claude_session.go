@@ -52,6 +52,18 @@ type codexThreadMeta struct {
 	Status      string
 }
 
+type codexStatusCache map[string]string
+
+func (c codexStatusCache) status(meta codexThreadMeta, load func(codexThreadMeta) string) string {
+	key := meta.ID + "\x00" + meta.RolloutPath
+	if status, ok := c[key]; ok {
+		return status
+	}
+	status := load(meta)
+	c[key] = status
+	return status
+}
+
 // claudeIndex is a one-shot snapshot of the process tree, the Claude session
 // files and the provider map, so a single sync pass over many windows costs one
 // ps + one readdir.
@@ -61,6 +73,7 @@ type claudeIndex struct {
 	byPID         map[int]claudeSessionMeta // claude session pid -> meta
 	providers     map[string]string         // ANTHROPIC_BASE_URL -> provider name
 	codexRollouts map[int][]string          // codex pid -> open root/subagent rollouts
+	codexStatuses codexStatusCache          // root thread -> status, shared within one sync pass
 }
 
 func buildClaudeIndex() claudeIndex {
@@ -70,6 +83,7 @@ func buildClaudeIndex() claudeIndex {
 		byPID:         map[int]claudeSessionMeta{},
 		providers:     loadProviderMap(),
 		codexRollouts: map[int][]string{},
+		codexStatuses: codexStatusCache{},
 	}
 	if out, err := runCommandOutput(3*time.Second, "ps", "-axo", "pid=,ppid=,command="); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
@@ -127,6 +141,10 @@ func codexStateDB() string {
 	return filepath.Join(homeDir(), ".codex", "state_5.sqlite")
 }
 
+func codexLogsDB() string {
+	return filepath.Join(homeDir(), ".codex", "logs_2.sqlite")
+}
+
 func shellSQLString(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
@@ -157,7 +175,6 @@ func latestCodexThreadForCWD(cwd string) (codexThreadMeta, bool) {
 		return codexThreadMeta{}, false
 	}
 	rows[0].Title = agentTitleForWindow(rows[0].Title)
-	rows[0].Status = codexStatusFromRollout(rows[0].RolloutPath)
 	return rows[0], true
 }
 
@@ -187,7 +204,6 @@ func codexThreadForRollouts(paths []string) (codexThreadMeta, bool) {
 		return codexThreadMeta{}, false
 	}
 	rows[0].Title = agentTitleForWindow(rows[0].Title)
-	rows[0].Status = codexStatusFromRollout(rows[0].RolloutPath)
 	return rows[0], true
 }
 
@@ -200,13 +216,24 @@ func codexStatusFromRollout(path string) string {
 }
 
 func codexStatusFromRolloutAt(path string, now time.Time) string {
+	return codexStatusSnapshotFromRolloutAt(path, now).Status
+}
+
+type codexStatusSnapshot struct {
+	Status            string
+	LastTaskStartedAt time.Time
+	LastProgressAt    time.Time
+}
+
+func codexStatusSnapshotFromRolloutAt(path string, now time.Time) codexStatusSnapshot {
+	var snapshot codexStatusSnapshot
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return ""
+		return snapshot
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return snapshot
 	}
 	defer f.Close()
 	status := ""
@@ -262,6 +289,12 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 		if json.Unmarshal(entry.Payload, &payload) != nil {
 			continue
 		}
+		entryAt, _ := time.Parse(time.RFC3339Nano, entry.Timestamp)
+		markProgress := func() {
+			if entryAt.After(snapshot.LastProgressAt) {
+				snapshot.LastProgressAt = entryAt
+			}
+		}
 		switch entry.Type {
 		case "turn_context":
 			autoReviewApprovals = payload.ApprovalsReviewer == "auto_review"
@@ -270,6 +303,8 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 			case "task_started":
 				status = "busy"
 				lastMeaningful = "task_started"
+				snapshot.LastTaskStartedAt = entryAt
+				markProgress()
 				clear(pendingUserInputCallIDs)
 			case "task_complete":
 				status = "idle"
@@ -283,14 +318,18 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 				clear(pendingUserInputCallIDs)
 			case "agent_message":
 				lastMeaningful = "agent_message"
+				markProgress()
 			case "user_message":
 				if status == "" {
 					status = "busy"
 				}
 				lastMeaningful = "user_message"
+				markProgress()
 			}
 		case "response_item":
 			switch payload.Type {
+			case "reasoning":
+				markProgress()
 			case "function_call", "custom_tool_call":
 				if payload.Name == "request_user_input" {
 					// Rollouts retain earlier turns, so keep explicit questions pending
@@ -299,6 +338,7 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 				}
 				status = "busy"
 				lastMeaningful = "tool_call"
+				markProgress()
 				if ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err == nil {
 					lastToolCallAt = ts
 				}
@@ -313,6 +353,7 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 			case "message":
 				if payload.Role == "assistant" {
 					lastMeaningful = "agent_message"
+					markProgress()
 				}
 			}
 		}
@@ -321,12 +362,56 @@ func codexStatusFromRolloutAt(path string, now time.Time) string {
 		}
 	}
 	if status == "busy" && len(pendingUserInputCallIDs) > 0 {
-		return "asking"
+		snapshot.Status = "asking"
+		return snapshot
 	}
 	if status == "busy" && !autoReviewApprovals && lastMeaningful == "tool_call" && !lastToolCallAt.IsZero() && now.Sub(lastToolCallAt) >= codexToolCallQuietWindow {
-		return "asking"
+		snapshot.Status = "asking"
+		return snapshot
 	}
-	return status
+	snapshot.Status = status
+	return snapshot
+}
+
+func resolveCodexStatus(snapshot codexStatusSnapshot, errorAt time.Time) string {
+	if !errorAt.IsZero() && !errorAt.Before(snapshot.LastProgressAt) {
+		return "error"
+	}
+	return snapshot.Status
+}
+
+func latestCodexTurnErrorFromDB(dbPath, threadID string, since time.Time) (time.Time, bool) {
+	dbPath = strings.TrimSpace(dbPath)
+	threadID = strings.TrimSpace(threadID)
+	if dbPath == "" || threadID == "" {
+		return time.Time{}, false
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return time.Time{}, false
+	}
+	query := `select ts, ts_nanos from logs where thread_id = ` + shellSQLString(threadID) +
+		` and ts >= ` + strconv.FormatInt(since.Unix(), 10) +
+		` and level = 'INFO' and target = 'codex_core::session::turn'` +
+		` and instr(feedback_log_body, 'Turn error:') > 0` +
+		` order by ts desc, ts_nanos desc, id desc limit 1;`
+	out, err := runCommandOutput(3*time.Second, "sqlite3", "-json", dbPath, query)
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return time.Time{}, false
+	}
+	var rows []struct {
+		Seconds     int64 `json:"ts"`
+		Nanoseconds int64 `json:"ts_nanos"`
+	}
+	if json.Unmarshal(out, &rows) != nil || len(rows) == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(rows[0].Seconds, rows[0].Nanoseconds), true
+}
+
+func codexStatusForThread(meta codexThreadMeta) string {
+	snapshot := codexStatusSnapshotFromRolloutAt(meta.RolloutPath, time.Now())
+	errorAt, _ := latestCodexTurnErrorFromDB(codexLogsDB(), meta.ID, snapshot.LastTaskStartedAt)
+	return resolveCodexStatus(snapshot, errorAt)
 }
 
 func codexPromptFromRollout(path string) string {
@@ -536,6 +621,7 @@ func codexThreadForPane(aiPane string, ci *claudeIndex) (codexThreadMeta, int, b
 		return codexThreadMeta{}, 0, false
 	}
 	if meta, ok := codexThreadForRollouts(ci.codexRolloutPathsForPanePID(panePID(aiPane))); ok {
+		meta.Status = ci.codexStatuses.status(meta, codexStatusForThread)
 		return meta, codexPID, true
 	}
 	cwd := ""
@@ -543,6 +629,7 @@ func codexThreadForPane(aiPane string, ci *claudeIndex) (codexThreadMeta, int, b
 		cwd = strings.TrimSpace(out)
 	}
 	meta, _ := latestCodexThreadForCWD(cwd)
+	meta.Status = ci.codexStatuses.status(meta, codexStatusForThread)
 	return meta, codexPID, true
 }
 
@@ -573,7 +660,11 @@ func (ci claudeIndex) sessionForPanePID(panePID int) (claudeSessionMeta, int, bo
 // statusTag maps a Claude session status to the window-name prefix.
 func statusTag(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "busy":
+	case "busy", "shell":
+		// "shell" = turn ended but background shell/subagent work still running.
+		// It's an active state, so surface it as busy ([B]) rather than falling
+		// through to no prefix. Task-completion semantics stay separate (see
+		// reconcileActions), so this only affects the visual tab prefix.
 		return "[B] "
 	case "idle":
 		return "[I] "
@@ -581,6 +672,8 @@ func statusTag(status string) string {
 		return "[?] "
 	case "limited":
 		return "[L] "
+	case "error":
+		return "[E] "
 	default:
 		return ""
 	}
@@ -780,6 +873,32 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 				_ = runTmux("set", "-wu", "-t", windowID, "@agent_limit_reset_at")
 			}
 		}
+		// A turn that stopped on an API error (5xx/529 overloaded, auth, etc.) is
+		// the "error" status ([E]) — mirroring Codex. Only checked when the session
+		// isn't busy and didn't hit the 429 limit (which is its own [L]). We stamp
+		// @agent_error_at/type for recoverable (5xx) errors so the same sync pass's
+		// reconcileClaudeErrorRetry can drive a bounded auto-retry; non-recoverable
+		// errors show [E] but carry no retry stamp.
+		if !strings.EqualFold(liveStatus, "busy") && !strings.EqualFold(liveStatus, "limited") {
+			if terr, ok := claudeErrorFromSession(meta); ok {
+				liveStatus = "error"
+				if terr.Retryable() {
+					setWindowTimeOption(windowID, optErrorAt, terr.At)
+					if terr.Type != "" && tmuxWindowOption(windowID, optErrorType) != terr.Type {
+						_ = runTmux("set", "-w", "-t", windowID, optErrorType, terr.Type)
+					}
+				} else {
+					unsetWindowOption(windowID, optErrorAt)
+					unsetWindowOption(windowID, optErrorType)
+				}
+			} else {
+				unsetWindowOption(windowID, optErrorAt)
+				unsetWindowOption(windowID, optErrorType)
+			}
+		} else {
+			unsetWindowOption(windowID, optErrorAt)
+			unsetWindowOption(windowID, optErrorType)
+		}
 	} else if hasCodex {
 		client = "codex"
 		if codexMeta.Model != "" {
@@ -914,7 +1033,8 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 
 	// Stamp last-busy timestamp every tick the agent is actively working so
 	// window nav can display "idle since" even after the panel is reopened.
-	if liveStatus == "busy" {
+	// "shell" (background work after the turn) counts as active here too.
+	if s := strings.ToLower(strings.TrimSpace(liveStatus)); s == "busy" || s == "shell" {
 		_ = runTmux("set", "-w", "-t", windowID, "@agent_last_busy_at",
 			strconv.FormatInt(time.Now().Unix(), 10))
 	}
@@ -927,9 +1047,9 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 //   - First call (option unset): always renames and records the name.
 //   - Subsequent calls where current name == @agent_window_name_auto: renames on change.
 //
-// extractStatusPrefix returns the leading [B]/[I]/[?]/[L] prefix from name (with trailing space).
+// extractStatusPrefix returns the leading agent status prefix from name.
 func extractStatusPrefix(name string) string {
-	for _, p := range []string{"[B] ", "[I] ", "[?] ", "[L] "} {
+	for _, p := range []string{"[B] ", "[I] ", "[?] ", "[L] ", "[E] "} {
 		if strings.HasPrefix(name, p) {
 			return p
 		}
@@ -937,12 +1057,13 @@ func extractStatusPrefix(name string) string {
 	return ""
 }
 
-// stripStatusPrefix removes a leading [B]/[I]/[?]/[L] prefix if present.
+// stripStatusPrefix removes a leading agent status prefix if present.
 func stripStatusPrefix(name string) string {
 	name = strings.TrimPrefix(name, "[B] ")
 	name = strings.TrimPrefix(name, "[I] ")
 	name = strings.TrimPrefix(name, "[?] ")
 	name = strings.TrimPrefix(name, "[L] ")
+	name = strings.TrimPrefix(name, "[E] ")
 	return name
 }
 
@@ -1159,6 +1280,9 @@ func runTmuxSyncNames(args []string) error {
 					meta.Status = "limited"
 				}
 				reconcileTask(sessionID, windowID, aiPane, meta, taskByPane[aiPane])
+				// Auto-retry a turn that stopped on a recoverable API error, using
+				// the @agent_error_* stamp agentWindowName wrote this pass.
+				reconcileClaudeErrorRetry(windowID, aiPane, meta)
 			} else if meta, _, ok := codexThreadForPane(aiPane, &ci); ok {
 				if meta.Title != "" {
 					_ = runTmux("set", "-w", "-t", windowID, "@agent_title", meta.Title)
@@ -1871,16 +1995,16 @@ func normalizeModelNameLong(model string) string {
 // reconcileAction 是 reconcileActions 决定要发给 daemon 的单条命令。抽成纯数据让
 // 状态→命令的映射可单测，reconcileTask 只负责按它拼 Envelope 并发送。
 type reconcileAction struct {
-	command string
-	asking  bool // 仅 command=="mark_asking" 有意义
+	command   string
+	asking    bool // 仅 command=="mark_asking" 有意义
+	attention string
 }
 
 // reconcileActions 把（已规整的）Claude 会话 status + daemon 当前任务状态映射成要发送
 // 的命令序列（纯函数、可单测）。语义：
 //   - busy：未在跑→start_task；在跑→mark_asking{false}（从 asking 回来时清标志）。
-//   - asking/waiting/paused/limited：未在跑先 start_task，再 mark_asking{true}（保序）。
-//     limited（额度满，429 后弹窗挡输入）视同 asking——需要用户注意，且不能被当 idle
-//     误发完成。
+//   - asking/waiting/paused/limited/error：未在跑先 start_task，再 mark_asking{true}（保序）。
+//     attention 区分 asking/limited/error，状态切换时可重新提醒；它们都保持任务 in_progress。
 //   - idle：在跑才 finish_task（交由 daemon 宽限去抖判定是否真完成）；否则 no-op。
 //   - shell：Claude 结束 turn 但有后台任务/subagent 在跑的活动态。在跑时发
 //     mark_asking{false}——既清 asking、又（在 daemon 侧）作废 turn 边界瞬态 idle 留下的
@@ -1894,11 +2018,16 @@ func reconcileActions(metaStatus, daemonStatus string) []reconcileAction {
 			return []reconcileAction{{command: "start_task"}}
 		}
 		return []reconcileAction{{command: "mark_asking", asking: false}}
-	case "asking", "waiting", "paused", "limited":
+	case "asking", "waiting", "paused":
 		if !inProgress {
-			return []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true}}
+			return []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: "asking"}}
 		}
-		return []reconcileAction{{command: "mark_asking", asking: true}}
+		return []reconcileAction{{command: "mark_asking", asking: true, attention: "asking"}}
+	case "limited", "error":
+		if !inProgress {
+			return []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: metaStatus}}
+		}
+		return []reconcileAction{{command: "mark_asking", asking: true, attention: metaStatus}}
 	case "idle":
 		if inProgress {
 			return []reconcileAction{{command: "finish_task"}}
@@ -1936,6 +2065,7 @@ func reconcileTaskStatus(sessionID, windowID, pane, title, status, daemonStatus 
 			env.Summary = summary
 		case "mark_asking":
 			env.Asking = act.asking
+			env.Attention = act.attention
 		}
 		_ = sendTrackerCommand(act.command, env)
 	}

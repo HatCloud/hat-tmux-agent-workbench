@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,8 @@ const (
 	generalOptionNewAgentPrompt = "new_agent_prompt"
 	generalOptionStripDate      = "strip_date_prefix"
 	generalOptionWindowNavSize  = "window_nav_size"
+	generalOptionAutoRetry      = "auto_retry"
+	generalOptionAutoRetryMax   = "auto_retry_max"
 )
 
 type generalEntry struct {
@@ -133,6 +136,19 @@ func (m *generalPanelModel) reload() {
 			Subtitle: "Width of the `prefix w` window navigator popup",
 			Value:    windowNavSizeSetting(cfg),
 			Values:   []string{"standard", "wide", "full"},
+		},
+		{
+			Key:      generalOptionAutoRetry,
+			Title:    "Auto-retry on error",
+			Subtitle: "Auto-resend when an agent stops on a 5xx/529 overloaded error",
+			Enabled:  autoRetrySetting(cfg),
+		},
+		{
+			Key:      generalOptionAutoRetryMax,
+			Title:    "Auto-retry max",
+			Subtitle: "Cap on consecutive auto-retries for the same error",
+			Value:    strconv.Itoa(autoRetryMaxSetting(cfg)),
+			Values:   []string{"3", "5", "10"},
 		},
 	}
 	m.selected = clampInt(m.selected, 0, maxInt(0, len(m.entries)-1))
@@ -361,6 +377,16 @@ func (m *generalPanelModel) toggleSelected() {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
 			return
 		}
+	case generalOptionAutoRetry:
+		if err := toggleAutoRetry(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
+	case generalOptionAutoRetryMax:
+		if _, err := cycleAutoRetryMax(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
 	}
 	m.reload()
 	if m.selected < len(m.entries) {
@@ -498,6 +524,14 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 			default:
 				stateText = "`prefix w` popup is wide (fits the footer on one line)"
 			}
+		case entry.Key == generalOptionAutoRetry:
+			if entry.Enabled {
+				stateText = "Recoverable errors are auto-retried with backoff"
+			} else {
+				stateText = "Errors just show [E]; no automatic retry"
+			}
+		case entry.Key == generalOptionAutoRetryMax:
+			stateText = "Give up after " + entry.Value + " retries of the same error"
 		case entry.Enabled:
 			stateText = "Active — system notifications are sent"
 		default:
