@@ -64,13 +64,27 @@ type claudeTurnError struct {
 	At     time.Time
 }
 
-// Retryable reports whether auto-retry should attempt this error: server-side
-// 5xx failures (500/502/503/504/529 overloaded) are transient and worth
-// retrying; 4xx (auth/billing/invalid-request/model-not-found) are not, and 429
-// is handled separately as "limited" (wait for the reset), never here.
+// Retryable reports whether auto-retry should attempt this error. Keyed on the
+// JSONL `error` category, because transient failures often carry NO HTTP status
+// (apiErrorStatus absent → Status==0): e.g. "Connection closed mid-response",
+// "Server error mid-response", "socket connection closed", "operation timed out".
+// Retryable (transient):
+//   - server_error at any status — 500/529 overloaded and the status-less
+//     connection/mid-response drops.
+//   - unknown WITHOUT a status — socket-closed / timeout network blips.
+//   - any explicit 5xx (defensive).
+// Not retryable: 429 (→ "limited", handled separately), authentication_failed,
+// invalid_request, model_not_found, max_output_tokens, and unknown WITH a 4xx
+// status (402 billing / 400 bad request) — retrying can't fix those.
 func (e claudeTurnError) Retryable() bool {
 	if e.Status == 429 {
 		return false
+	}
+	switch e.Type {
+	case "server_error":
+		return true
+	case "unknown":
+		return e.Status == 0 // socket closed / timeout; exclude 4xx billing/bad-request
 	}
 	return e.Status >= 500
 }

@@ -42,6 +42,44 @@ func TestScanClaudeError(t *testing.T) {
 			t.Fatalf("got %+v ok=%v, want non-retryable 401", got, ok)
 		}
 	})
+	t.Run("connection-closed (server_error, no status) is retryable", func(t *testing.T) {
+		connErr := `{"type":"assistant","error":"server_error","isApiErrorMessage":true,"timestamp":"2026-07-07T07:05:52Z","message":{"content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]}}`
+		got, ok := scanClaudeError([][]byte{line(connErr)})
+		if !ok || got.Status != 0 || !got.Retryable() {
+			t.Fatalf("got %+v ok=%v, want retryable server_error/0", got, ok)
+		}
+	})
+}
+
+// TestRetryable pins the retry policy to the real error taxonomy observed in
+// Claude session JSONL (see error_retry.go Retryable).
+func TestRetryable(t *testing.T) {
+	cases := []struct {
+		typ  string
+		st   int
+		want bool
+	}{
+		{"server_error", 529, true},   // overloaded
+		{"server_error", 500, true},   // internal
+		{"server_error", 0, true},     // connection closed / server mid-response
+		{"unknown", 0, true},          // socket closed / operation timed out
+		{"unknown", 402, false},       // billing
+		{"unknown", 400, false},       // bad request
+		{"rate_limit", 429, false},    // → limited, never retried here
+		{"authentication_failed", 401, false},
+		{"authentication_failed", 0, false},
+		{"invalid_request", 400, false},
+		{"invalid_request", 0, false}, // prompt too long
+		{"model_not_found", 404, false},
+		{"max_output_tokens", 0, false},
+		{"", 0, false}, // tool-call parse failure (Claude already retried)
+	}
+	for _, c := range cases {
+		got := claudeTurnError{Type: c.typ, Status: c.st}.Retryable()
+		if got != c.want {
+			t.Errorf("Retryable{type:%q status:%d} = %v, want %v", c.typ, c.st, got, c.want)
+		}
+	}
 }
 
 func TestClaudeErrorFromJSONL(t *testing.T) {
