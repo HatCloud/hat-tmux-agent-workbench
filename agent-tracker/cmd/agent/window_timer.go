@@ -622,16 +622,57 @@ func fireTimer(t *windowTimer, ci *claudeIndex) error {
 	// Escape it waits ~500ms so the box tears down before the content lands; the
 	// normal no-dialog case sends nothing here and just injects content+Enter.
 	dismissUsageLimitDialog(paneID, ci)
-	if err := runTmux("send-keys", "-t", paneID, "-l", t.Content); err != nil {
-		return err
+	return pasteAndSubmit(paneID, t.Content, t.SendEnter)
+}
+
+// pasteAndSubmit delivers content to a pane as a bracketed paste, then optionally
+// submits with Enter.
+//
+// A raw `send-keys -l` burst carries no explicit paste-end marker, so an agent
+// TUI (Claude Code) that detects pastes by timing can still be "settling" the
+// burst when a follow-up Enter arrives and absorb it as a newline instead of
+// submitting — a race that surfaces on slower machines (content ends up sitting
+// in the input box with a trailing newline, never sent). Bracketed paste
+// (set-buffer + `paste-buffer -p`) wraps the content in ESC[200~…ESC[201~, so the
+// terminal sees an explicit paste-end before the Enter in the same ordered byte
+// stream; the Enter is then unambiguously a submit regardless of timing.
+//
+// `paste-buffer -p` only adds the brackets when the app requested bracketed paste
+// mode, so it degrades gracefully for panes that didn't. A pane-scoped named
+// buffer avoids clobbering the user's paste buffer and races between panes.
+func pasteAndSubmit(paneID, content string, sendEnter bool) error {
+	if strings.TrimSpace(paneID) == "" {
+		return fmt.Errorf("pasteAndSubmit: empty pane")
 	}
-	if t.SendEnter {
-		// Give the terminal a beat to register the injected content before Enter;
-		// firing them back-to-back can drop the submit (part of the swallow bug).
+	if content != "" {
+		buf := "agent-paste-" + sanitizeBufferName(paneID)
+		if err := runTmux("set-buffer", "-b", buf, "--", content); err != nil {
+			return err
+		}
+		if err := runTmux("paste-buffer", "-p", "-d", "-b", buf, "-t", paneID); err != nil {
+			return err
+		}
+	}
+	if sendEnter {
+		// The Enter already follows the paste-end marker in-order, so submission no
+		// longer depends on timing; this brief pause is just insurance for the input
+		// to render before the submit.
 		time.Sleep(150 * time.Millisecond)
 		return runTmux("send-keys", "-t", paneID, "Enter")
 	}
 	return nil
+}
+
+// sanitizeBufferName maps a pane id (e.g. "%5") to a tmux-buffer-safe token.
+func sanitizeBufferName(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return '_'
+		}
+	}, s)
 }
 
 // checkAndFireTimers checks all timers and fires any that are due.
