@@ -5,7 +5,7 @@ session_id="$1"
 [[ -z "$session_id" ]] && exit 0
 
 # Read the shared tracker cache (refreshed by tracker_cache.sh) instead of
-# issuing a per-render daemon IPC — status-interval is 1s.
+# issuing a per-render daemon IPC — status-interval is 3s.
 CACHE_FILE="$HOME/.hat-config/state/agent-tracker/tmux-tracker-cache.json"
 [[ -f "$CACHE_FILE" ]] || exit 0
 state=$(cat "$CACHE_FILE" 2>/dev/null || true)

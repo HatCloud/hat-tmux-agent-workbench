@@ -90,7 +90,7 @@ get_session_icon() {
     [[ "$unread" == "1" && "$wfail" == "1" ]] && has_fail=1
     [[ "$rbell" == "1" ]] && has_bell=1
     [[ "$watching" == "1" ]] && has_watch=1
-    # 实时 busy：窗口名 [B] 前缀（sync-names 每秒写），全 idle 时自然消失
+    # 实时 busy：窗口名 [B] 前缀（sync-names 每 3 秒写），全 idle 时自然消失
     [[ "$wname" == '[B]'* ]] && has_watch=1
   done < <(tmux list-windows -t "$sid" \
     -F '#{window_id}|#{@unread}|#{@watch_failed}|#{@watching}|#{@agent_remote_bell}|#{window_name}' 2>/dev/null || true)
