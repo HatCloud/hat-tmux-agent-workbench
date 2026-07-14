@@ -87,8 +87,8 @@ func TestProviderForPID(t *testing.T) {
 	}
 	defer func() { _ = cmd2.Process.Kill() }()
 	time.Sleep(150 * time.Millisecond)
-	if got := providerForPID(cmd2.Process.Pid, map[string]string{url: "minimax"}); got != "official" {
-		t.Fatalf("providerForPID (no base url) = %q, want official", got)
+	if got := providerForPID(cmd2.Process.Pid, map[string]string{url: "minimax"}); got != "anthropic" {
+		t.Fatalf("providerForPID (no base url) = %q, want anthropic", got)
 	}
 }
 

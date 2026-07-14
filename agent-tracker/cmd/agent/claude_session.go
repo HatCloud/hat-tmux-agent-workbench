@@ -716,7 +716,7 @@ func loadProviderMap() map[string]string {
 }
 
 // providerForPID reads the Claude process env's ANTHROPIC_BASE_URL and maps it to
-// a provider name. Empty/unset → "official" (which unsets the URL).
+// a provider name. Empty/unset → "anthropic" (the official login provider, which unsets the URL).
 func providerForPID(pid int, providers map[string]string) string {
 	if pid <= 0 {
 		return ""
@@ -734,7 +734,7 @@ func providerForPID(pid int, providers map[string]string) string {
 			return ""
 		}
 	}
-	return "official"
+	return "anthropic"
 }
 
 // agentAIPane returns the window's primary AI pane (@agent_pane_role=ai),
@@ -933,7 +933,7 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 			// Stale agent tags: either the agent exited or the launcher tagged the
 			// window before its process came up. Drop the live-detected
 			// provider/model so Window Nav shows no phantom provider (e.g. a
-			// lingering "official") for a window with no running agent. Keep
+			// lingering "anthropic") for a window with no running agent. Keep
 			// @agent_client as the window's structural identity; it is refilled
 			// when a claude/codex process appears.
 			if tmuxWindowOption(windowID, "@agent_provider") != "" {
