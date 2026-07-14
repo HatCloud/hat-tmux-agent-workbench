@@ -943,9 +943,14 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 				_ = runTmux("set", "-wu", "-t", windowID, "@agent_model")
 			}
 		}
-		// If it's running ssh, mark it "🌐 host" (no [B]/[I] status prefix).
+		// If it's running ssh, mark it "🌐 host", prefixed with the remote's
+		// aggregate live status ([B]/[?]/[E]/…) when the daemon's remote-bell poller
+		// has mirrored it into @agent_remote_status (any remote window busy → [B]).
 		// autoRenameWindow keeps manual renames.
 		if marker := sshWindowMarker(windowID); marker != "" {
+			if rs := strings.TrimSpace(tmuxWindowOption(windowID, "@agent_remote_status")); rs != "" {
+				return statusTag(rs) + marker
+			}
 			return marker
 		}
 		// A pending agent window — its 3-pane layout was built via `prefix ]` with a
