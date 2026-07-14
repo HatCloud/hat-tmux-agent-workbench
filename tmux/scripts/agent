@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-default_provider="$(cat "$HOME/.claude/config/default-provider" 2>/dev/null || echo official)"
+default_provider="$(cat "$HOME/.hat-env/providers/default-provider" 2>/dev/null || echo anthropic)"
 
 build_options() {
   printf 'Claude Code · 默认 (%s)\n' "$default_provider"
