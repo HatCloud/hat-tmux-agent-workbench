@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 /agent-tracker/bin/
 /agent-tracker/agent
+/agent-tracker/tracker-server
+/agent-tracker/tracker-mcp
 
 # git worktree（hat-flow task 工作流等）置于此，勿提交
 /.claude/worktrees/
