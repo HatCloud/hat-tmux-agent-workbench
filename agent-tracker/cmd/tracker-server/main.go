@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -485,15 +486,35 @@ func (s *server) finishTask(target tmuxTarget, note string) (bool, error) {
 	if note != "" {
 		t.CompletionNote = note
 	}
+	// Explicitly mark this fresh completion un-acknowledged BEFORE probing. The
+	// probe (isWindowWatched → tmux/lsappinfo) is done OUTSIDE s.mu so a slow tmux
+	// can't freeze the whole daemon (s.mu is the single process-wide lock, shared
+	// by 12 methods). Setting Acknowledged=false here is load-bearing: taskRecord
+	// defaults Acknowledged:true, so without this the post-probe recheck's
+	// !t.Acknowledged guard would reject every normal completion and swallow the
+	// notification.
+	t.Acknowledged = false
+	key2 := key // stable across the unlock window
+	s.mu.Unlock()
+	watched := isWindowWatched(target.WindowID)
+	s.mu.Lock()
+	// Recheck under the reacquired lock: during the unlocked probe, startTask may
+	// have reset this key to in_progress (Status != completed), or acknowledgeTask
+	// may have marked it read (Acknowledged==true). Either means we must NOT
+	// overwrite — a pointer-equality check is useless (startTask edits in place, so
+	// the pointer is unchanged). Bail and let the next per-second finish_task retry
+	// (or leave the already-acknowledged task alone).
+	t2, ok2 := s.tasks[key2]
+	if !ok2 || t2.Status != statusCompleted || t2.Acknowledged {
+		return false, nil
+	}
 	// Auto-acknowledge only if the user is actually watching: this window selected
 	// AND the terminal frontmost. Finishing while you watch shouldn't raise a 🔔
 	// you can't clear without leaving and returning; but a selected window whose
 	// terminal is backgrounded is NOT watched, so it should still ring + notify.
-	t.Acknowledged = isWindowWatched(target.WindowID)
-	// The completion notification rides the exact same condition as the 🔔:
-	// raise it only on a fresh completion the user isn't already watching. Bell
-	// and notification are decided together here, cleared together in acknowledge.
-	return !t.Acknowledged, nil
+	// The completion notification rides the exact same condition as the 🔔.
+	t2.Acknowledged = watched
+	return !watched, nil
 }
 
 func (s *server) markTaskAsking(target tmuxTarget, asking bool) bool {
@@ -1195,9 +1216,23 @@ func sendSystemNotification(title, message string, action *notificationAction, g
 	return nil
 }
 
+// execTimeout bounds every tmux/lsappinfo call the daemon makes. Mirrors the 3s
+// cap cmd/agent/main.go's runTmux/runTmuxOutput already use — without it a hung
+// tmux (e.g. a client stuck rendering a huge scrollback, or a swapping server)
+// blocks the caller indefinitely; when that caller holds s.mu (finishTask's probe
+// path), the whole daemon freezes. tracker-server previously had no equivalent
+// wrapper and every tmux/lsappinfo exec was a bare exec.Command.
+const execTimeout = 3 * time.Second
+
+// runCommandOutputCtx runs name+args with a timeout, returning combined output.
+func runCommandOutputCtx(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
 func runTmux(args ...string) error {
-	cmd := exec.Command("tmux", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := runCommandOutputCtx(execTimeout, "tmux", args...)
 	if err != nil {
 		trimmed := strings.TrimSpace(string(output))
 		if trimmed != "" {
@@ -1280,11 +1315,11 @@ func frontmostBundleID() string {
 	if err != nil {
 		return ""
 	}
-	asn, err := exec.Command(bin, "front").Output()
+	asn, err := runCommandOutputCtx(execTimeout, bin, "front")
 	if err != nil || strings.TrimSpace(string(asn)) == "" {
 		return ""
 	}
-	out, err := exec.Command(bin, "info", "-only", "bundleID", strings.TrimSpace(string(asn))).Output()
+	out, err := runCommandOutputCtx(execTimeout, bin, "info", "-only", "bundleID", strings.TrimSpace(string(asn)))
 	if err != nil {
 		return ""
 	}
@@ -1298,8 +1333,7 @@ func frontmostBundleID() string {
 }
 
 func tmuxOutput(args ...string) (string, error) {
-	cmd := exec.Command("tmux", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := runCommandOutputCtx(execTimeout, "tmux", args...)
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
@@ -1307,8 +1341,7 @@ func tmuxOutput(args ...string) (string, error) {
 }
 
 func tmuxDisplay(client, format string) (string, error) {
-	cmd := exec.Command("tmux", "display-message", "-p", "-c", client, format)
-	output, err := cmd.CombinedOutput()
+	output, err := runCommandOutputCtx(execTimeout, "tmux", "display-message", "-p", "-c", client, format)
 	if err != nil {
 		return "", fmt.Errorf("display-message %s: %w (%s)", format, err, strings.TrimSpace(string(output)))
 	}
@@ -1316,8 +1349,7 @@ func tmuxDisplay(client, format string) (string, error) {
 }
 
 func listClients() ([]string, error) {
-	cmd := exec.Command("tmux", "list-clients", "-F", "#{client_tty}")
-	output, err := cmd.CombinedOutput()
+	output, err := runCommandOutputCtx(execTimeout, "tmux", "list-clients", "-F", "#{client_tty}")
 	if err != nil {
 		return nil, err
 	}
@@ -1470,8 +1502,7 @@ func tmuxQuery(target, format string) (string, error) {
 		args = append(args, "-t", target)
 	}
 	args = append(args, format)
-	cmd := exec.Command("tmux", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := runCommandOutputCtx(execTimeout, "tmux", args...)
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}

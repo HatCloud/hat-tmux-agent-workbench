@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -232,5 +233,140 @@ func TestFinishTaskNoopWhenNoInProgress(t *testing.T) {
 	notify, _ = s.finishTask(target, "")
 	if notify {
 		t.Fatalf("已 completed 任务不应再次通知")
+	}
+}
+
+// ---- B1: 锁外探测 + TOCTOU 复检回归测试 ----
+
+// blockingWindowWatched 用一个可控 channel 阻塞 isWindowWatched，模拟锁外探测
+// 期间的慢调用。started 在探测进入时关闭（通知并发 goroutine 可以动手了），
+// release 由测试关闭以放行探测返回 watched。返回恢复函数。
+func blockingWindowWatched(watched bool, started chan<- struct{}, release <-chan struct{}) func() {
+	prev := isWindowWatched
+	var once sync.Once
+	isWindowWatched = func(string) bool {
+		once.Do(func() { close(started) })
+		<-release
+		return watched
+	}
+	return func() { isWindowWatched = prev }
+}
+
+// committedGraceTarget 建一个已过宽限、即将在下次 finishTask 提交 completed 的 in_progress 任务。
+func committedGraceTarget(s *server) tmuxTarget {
+	target := testTarget()
+	task := inProgressTask(s, target)
+	past := time.Now().Add(-completionGraceWindow - time.Second)
+	task.PendingCompleteAt = &past
+	return target
+}
+
+// ① finishTask 在锁外探测期间不得持有 s.mu——否则 tmux 变慢会冻结整个 daemon。
+func TestFinishTaskDoesNotHoldLockDuringWatch(t *testing.T) {
+	s := newTestServer()
+	target := committedGraceTarget(s)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer blockingWindowWatched(false, started, release)()
+
+	go s.finishTask(target, "")
+	<-started // 探测已进入（finishTask 应已解锁）
+
+	got := make(chan struct{})
+	go func() {
+		s.mu.Lock()
+		s.mu.Unlock()
+		close(got)
+	}()
+	select {
+	case <-got: // 拿到锁 → finishTask 没持锁探测 ✓
+	case <-time.After(200 * time.Millisecond):
+		close(release)
+		t.Fatal("finishTask 在锁外探测期间仍持有 s.mu：其它操作被冻结")
+	}
+	close(release)
+}
+
+// ② 探测期间 startTask 复位同 key → finishTask 复检 Status 应放弃写回。
+func TestFinishTaskTOCTOURecheckStartTask(t *testing.T) {
+	s := newTestServer()
+	target := committedGraceTarget(s)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer blockingWindowWatched(false, started, release)()
+
+	var notify bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); notify, _ = s.finishTask(target, "") }()
+	<-started
+	s.startTask(target, "restarted") // 复位为 in_progress
+	close(release)
+	wg.Wait()
+
+	key := taskKey(target.SessionID, target.WindowID, target.PaneID)
+	if notify {
+		t.Fatal("startTask 复位后 finishTask 不应通知")
+	}
+	if s.tasks[key].Status != statusInProgress {
+		t.Fatalf("startTask 复位后应 in_progress，实为 %q", s.tasks[key].Status)
+	}
+}
+
+// ③ 探测期间 acknowledgeTask 标已读 → finishTask 复检 !Acknowledged 应放弃写回，不重弹通知。
+func TestFinishTaskTOCTOURecheckAcknowledge(t *testing.T) {
+	s := newTestServer()
+	target := committedGraceTarget(s)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer blockingWindowWatched(false, started, release)() // watched=false：若无复检会把 ack 改回未读
+
+	var notify bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); notify, _ = s.finishTask(target, "") }()
+	<-started
+	s.acknowledgeTask(target.SessionID, target.WindowID, target.PaneID) // 用户在探测期间点了窗口，消 🔔
+	close(release)
+	wg.Wait()
+
+	key := taskKey(target.SessionID, target.WindowID, target.PaneID)
+	if notify {
+		t.Fatal("并发 acknowledge 后 finishTask 不应返回需通知")
+	}
+	if !s.tasks[key].Acknowledged {
+		t.Fatal("并发 acknowledge 后 finishTask 不应把任务改回未读")
+	}
+}
+
+// ④ R4 初值陷阱回归：无并发、未观看，任务从默认 Acknowledged:true 进入完成，仍应通知。
+func TestFinishTaskNormalUnwatchedStillNotifies(t *testing.T) {
+	defer withWindowWatched(false)() // 未观看
+	s := newTestServer()
+	target := testTarget()
+	task := inProgressTask(s, target) // Acknowledged:true（默认）
+	past := time.Now().Add(-completionGraceWindow - time.Second)
+	task.PendingCompleteAt = &past
+
+	notify, _ := s.finishTask(target, "")
+	if !notify {
+		t.Fatal("正常未观看完成应通知（不得被默认 Acknowledged:true 吞掉）")
+	}
+	if task.Acknowledged {
+		t.Fatal("未观看完成的 Acknowledged 应落为 false")
+	}
+}
+
+// ---- B1: exec 超时包装 ----
+
+func TestRunTmuxOutputCtxTimeout(t *testing.T) {
+	start := time.Now()
+	_, err := runCommandOutputCtx(1*time.Second, "sleep", "5")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("超时命令应返回错误")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("超时应在 ~1s 触发，实际耗时 %v（未加 context 超时）", elapsed)
 	}
 }
