@@ -6,7 +6,11 @@ current_path="${2:-}"
 label="${3:-}"
 
 touch "$LOCK"
-# label 非空：直接用 label 作为初始 session 名（apply_order 会再加 <position>- 前缀）
+# 标志位（非互斥锁）：告诉 session_created.sh「本脚本正在手动建 session 并自行编号，
+# 别插手自动编号」。用 trap 覆盖成功/失败/信号所有退出路径，避免进程被杀后标志位
+# 永久残留、卡死此后所有新建 session 的自动编号（session_created.sh 侧另有陈旧超时兜底
+# SIGKILL/断电这类 trap 兜不住的情形）。
+trap 'rm -f "$LOCK"' EXIT INT TERM HUP
 # label 为空：用临时名 'session' 走 session-created hook 自动编号
 if [ -n "$label" ]; then
   tmux_args=(new-session -d -P -s "$label" -F '#{session_id}')
@@ -21,7 +25,6 @@ fi
 session_id=$(tmux "${tmux_args[@]}" 2>/dev/null)
 
 if [ -z "$session_id" ]; then
-  rm -f "$LOCK"
   exit 0
 fi
 
@@ -30,7 +33,5 @@ if [ -n "$current_session_id" ]; then
 else
   python3 "$HOME/.hat-config/tmux/scripts/session_manager.py" ensure
 fi
-
-rm -f "$LOCK"
 
 tmux switch-client -t "$session_id"
