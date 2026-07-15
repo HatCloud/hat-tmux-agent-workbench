@@ -587,6 +587,38 @@ func TestSanitizeWindowMarker(t *testing.T) {
 	}
 }
 
+// truncateWindowTitle bounds the title segment of a window name. Codex uses the
+// whole prompt as its session title and `prefix ]` accepts pasted text, so an
+// unbounded title reaches tmux's per-tick format expansion and leaks there
+// (~6KB name measured at ~6MB/min of tmux heap growth). Counting is by rune, not
+// byte, so CJK titles are not cut mid-character.
+func TestTruncateWindowTitle(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"under limit passes through", "agent-hl-sessions", 100, "agent-hl-sessions"},
+		{"empty stays empty", "", 100, ""},
+		{"exactly at limit is untouched", strings.Repeat("a", 100), 100, strings.Repeat("a", 100)},
+		{"one over limit truncates with ellipsis", strings.Repeat("a", 101), 100, strings.Repeat("a", 99) + "…"},
+		{"cjk counted by rune not byte", strings.Repeat("需", 120), 100, strings.Repeat("需", 99) + "…"},
+		{"result never exceeds max runes", strings.Repeat("x", 5000), 100, strings.Repeat("x", 99) + "…"},
+		{"non-positive max disables truncation", strings.Repeat("a", 200), 0, strings.Repeat("a", 200)},
+	}
+	for _, c := range cases {
+		got := truncateWindowTitle(c.in, c.max)
+		if got != c.want {
+			t.Errorf("%s: truncateWindowTitle(len=%d, max=%d) = %q (%d runes), want %q (%d runes)",
+				c.name, len([]rune(c.in)), c.max, got, len([]rune(got)), c.want, len([]rune(c.want)))
+		}
+		if c.max > 0 && len([]rune(got)) > c.max {
+			t.Errorf("%s: result %d runes exceeds max %d", c.name, len([]rune(got)), c.max)
+		}
+	}
+}
+
 // sshProcessArgsFromSnapshot finds the first ssh process in the subtree rooted at
 // a pane pid. tmux's pane_pid is the shell; ssh typed at a prompt is a child (or
 // deeper), so the walk must descend, not just inspect the root.

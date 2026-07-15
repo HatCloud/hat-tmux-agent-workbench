@@ -991,8 +991,8 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 	// "open-source-refactor" in the tab, @agent_notify_name, and Window Nav Name.
 	// (The project/dir segment already strips it via abbrevProject.)
 	stripDate := stripDatePrefixSetting(cfg)
-	titleSeg := maybeStripDatePrefix(sessionTitle, stripDate)
-	labelSeg := maybeStripDatePrefix(sessionLabel, stripDate)
+	titleSeg := truncateWindowTitle(maybeStripDatePrefix(sessionTitle, stripDate), windowTitleMaxRunes)
+	labelSeg := truncateWindowTitle(maybeStripDatePrefix(sessionLabel, stripDate), windowTitleMaxRunes)
 
 	// assemble builds "[status]project/name (model)", each part gated by a flag.
 	// tmux already shows the window index before the name, so no idx prefix here.
@@ -1707,6 +1707,26 @@ func sshProcessArgsFromSnapshot(psOutput string, rootPID int) string {
 // sanitizeWindowMarker strips C0/C1 control characters (incl. DEL) plus the tmux
 // format character '#' from s, so a malformed alias/hostname can't inject markup
 // into the status line. Multi-byte printable runes (e.g. the 🌐 emoji) pass through.
+// windowTitleMaxRunes bounds the title segment of an auto-computed window name.
+// tmux expands the window name on every status-line redraw and every sync-names
+// tick; an unbounded name makes each expansion allocate proportionally and tmux
+// 3.6b does not free those, so a 6KB name grew the server ~6MB/min. Codex uses
+// the entire prompt as its session title, so this is the normal case, not an edge.
+const windowTitleMaxRunes = 100
+
+// truncateWindowTitle caps s at max runes, marking a cut with an ellipsis that
+// counts toward the cap. A non-positive max disables truncation.
+func truncateWindowTitle(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
 func sanitizeWindowMarker(s string) string {
 	var b strings.Builder
 	for _, r := range s {
