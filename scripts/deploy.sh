@@ -8,6 +8,8 @@ ASSUME_YES=0
 RELOAD_TMUX=1
 REMOVE_STATE=0
 KEEP_STATE=0
+MINI_HOST="${HAT_CONFIG_MINI_HOST:-mini}"
+SKIP_MINI_SYNC="${HAT_CONFIG_SKIP_MINI_SYNC:-0}"
 
 # Per-step install/uninstall gates (default: do everything). Each maps to one
 # side of the setup wizard's intrusion disclosure; uninstall honours them
@@ -71,6 +73,7 @@ Options:
   --no-reload        Do not reload running tmux servers
   --remove-state     Remove ~/.hat-config/state during uninstall
   --keep-state       Keep ~/.hat-config/state during uninstall
+  --skip-mini-sync   Do not sync/deploy to the SSH host "mini"
   --help, -h         Show this help
 
 Per-step skip flags (apply to both install/update and uninstall, symmetric):
@@ -154,6 +157,9 @@ parse_args() {
       --keep-state)
         KEEP_STATE=1
         REMOVE_STATE=0
+        ;;
+      --skip-mini-sync)
+        SKIP_MINI_SYNC=1
         ;;
       --skip-tmux)
         SKIP_TMUX=1
@@ -894,6 +900,52 @@ install_pre_commit_hook() {
   log "Installed git pre-commit hook (reserved-path guard)"
 }
 
+sync_mini_if_available() {
+  [[ "$SKIP_MINI_SYNC" == "1" ]] && return 0
+
+  local ssh_opts=(-o BatchMode=yes -o ConnectTimeout=3)
+  if ! command -v ssh >/dev/null 2>&1 \
+     || ! ssh "${ssh_opts[@]}" "$MINI_HOST" true >/dev/null 2>&1; then
+    log "mini sync: ${MINI_HOST} is not reachable over SSH; skipped"
+    return 0
+  fi
+  command -v rsync >/dev/null 2>&1 || die "mini sync: rsync is required when ${MINI_HOST} is reachable"
+
+  log "mini sync: syncing project files to ${MINI_HOST}:~/.hat-config"
+  rsync -a --delete \
+    --exclude='/.git/' \
+    --exclude='/.claude/' \
+    --exclude='/.tasks/' \
+    --exclude='/.stfolder/' \
+    --exclude='/.stignore' \
+    --exclude='/.stignore-shared' \
+    --exclude='/CLAUDE.md' \
+    --exclude='/private/' \
+    --exclude='/state/' \
+    --exclude='/tmp/' \
+    --exclude='/agent-tracker/bin/' \
+    --exclude='/agent-tracker/agent' \
+    --exclude='/agent-tracker/agent-config.json' \
+    --exclude='/snippets/private/' \
+    --exclude='/snippets/.favorites' \
+    --exclude='/.DS_Store' \
+    --exclude='*/.DS_Store' \
+    --exclude='__pycache__/' \
+    --exclude='*.pyc' \
+    "${REPO_DIR}/" "${MINI_HOST}:.hat-config/"
+
+  local remote_cmd="cd \"\$HOME/.hat-config\" && PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin HAT_CONFIG_SKIP_MINI_SYNC=1 scripts/deploy.sh update --yes"
+  [[ "$RELOAD_TMUX" -eq 0 ]] && remote_cmd+=" --no-reload"
+  [[ "$SKIP_TMUX" -eq 1 ]] && remote_cmd+=" --skip-tmux"
+  [[ "$SKIP_DAEMON" -eq 1 ]] && remote_cmd+=" --skip-daemon"
+  [[ "$SKIP_WS_TIMER" -eq 1 ]] && remote_cmd+=" --skip-ws-timer"
+  [[ "$SKIP_STOP_HOOK" -eq 1 ]] && remote_cmd+=" --skip-stop-hook"
+  [[ "$SKIP_STATUSLINE" -eq 1 ]] && remote_cmd+=" --skip-statusline"
+  [[ "$SKIP_ALIAS" -eq 1 ]] && remote_cmd+=" --skip-alias"
+  ssh "${ssh_opts[@]}" "$MINI_HOST" "$remote_cmd"
+  log "mini sync: ${MINI_HOST} updated"
+}
+
 install_or_update() {
   preflight
   ensure_runtime
@@ -909,6 +961,7 @@ install_or_update() {
     log "Installed Hat Config tmux integration into ${TMUX_CONF}"
   fi
   install_pre_commit_hook
+  sync_mini_if_available
 }
 
 uninstall() {

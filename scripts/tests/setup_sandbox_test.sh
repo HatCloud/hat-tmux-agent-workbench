@@ -149,7 +149,20 @@ case "${1:-}" in
 esac
 STUB
 
-chmod +x "$STUB_BIN/launchctl" "$STUB_BIN/brew" "$STUB_BIN/go"
+cat > "$STUB_BIN/ssh" <<'STUB'
+#!/bin/bash
+printf 'ssh %s\n' "$*" >> "${STUB_LOG:-/dev/null}"
+exit 0
+STUB
+
+cat > "$STUB_BIN/rsync" <<'STUB'
+#!/bin/bash
+printf 'rsync %s\n' "$*" >> "${STUB_LOG:-/dev/null}"
+exit 0
+STUB
+
+chmod +x "$STUB_BIN/launchctl" "$STUB_BIN/brew" "$STUB_BIN/go" \
+  "$STUB_BIN/ssh" "$STUB_BIN/rsync"
 
 # ---------------------------------------------------------------------------
 # Invocation harness — clean env whitelist; stub bin first on PATH.
@@ -303,6 +316,20 @@ if [ -f "$HOME_DIR/.tmux.conf" ] && grep -Fq "$TMUX_START_MARKER" "$HOME_DIR/.tm
   check "AT11 deploy install --tmux writes managed block to ~/.tmux.conf" 0
 else
   check "AT11 deploy install --tmux writes managed block to ~/.tmux.conf" 1
+fi
+if grep -Fq 'rsync ' "$SANDBOX/real-tmux.log" 2>/dev/null \
+   && grep -Fq 'mini:.hat-config/' "$SANDBOX/real-tmux.log" 2>/dev/null; then
+  check "AT11 reachable mini receives a project sync" 0
+else
+  check "AT11 reachable mini receives a project sync" 1
+fi
+if grep -Fq 'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' \
+     "$SANDBOX/real-tmux.log" 2>/dev/null \
+   && grep -Fq 'HAT_CONFIG_SKIP_MINI_SYNC=1' "$SANDBOX/real-tmux.log" 2>/dev/null \
+   && grep -Fq 'scripts/deploy.sh update --yes' "$SANDBOX/real-tmux.log" 2>/dev/null; then
+  check "AT11 mini runs deploy update with toolchain PATH and recursion disabled" 0
+else
+  check "AT11 mini runs deploy update with toolchain PATH and recursion disabled" 1
 fi
 
 run STUB_LOG="$SANDBOX/real-daemon.log" /bin/bash "$SBOX_DEPLOY" install \
