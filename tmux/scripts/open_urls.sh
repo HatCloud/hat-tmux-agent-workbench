@@ -41,8 +41,11 @@ pane_id="${1:?pane_id required}"
 # -S -200：多抓 200 行回滚，覆盖刚滚出屏幕的链接；-J 合并被折行的长 URL。
 # 尾部 || true 必须有：无 URL 时 grep rc=1，set -e + pipefail 会把脚本在
 # 走到下方提示前直接杀死。
+# bracket 表达式按 POSIX 写：排除的 ] 放 [^ 后第一位、[ 不加反斜杠——
+# BSD /usr/bin/grep 把 \[\] 当字面反斜杠、类提前闭合，整条 URL 分支永不匹配
+# （GNU/包装过的 grep 恰好宽容，交互环境测不出来）。
 urls="$(tmux capture-pane -p -J -S -200 -t "$pane_id" 2>/dev/null |
-  grep -oE '(https?|ftp|file)://[^ <>"()\[\]'"'"']+|www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^ <>"()\[\]'"'"']*' |
+  grep -oE '(https?|ftp|file)://[^] <>"()['"'"']+|www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^] <>"()['"'"']*' |
   sed -E 's/[.,;:!?]+$//' |
   awk '!seen[$0]++' || true)"
 
