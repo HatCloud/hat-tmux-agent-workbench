@@ -394,7 +394,9 @@ func (m *windowTimerPanelModel) statusForAdded(t *windowTimer) {
 }
 
 // quickAddContinue adds the canned "continue after quota reset" timer for the
-// current window: content "continue", trigger reset, send Enter, one-shot.
+// current window: content "continue", trigger reset, send Enter, one-shot,
+// auto-deleting — quick-added timers are fire-and-forget, so the record should
+// not linger as a disabled leftover after it runs.
 // Created before any limit is hit it stays dormant until a limit stamp wakes it.
 func (m *windowTimerPanelModel) quickAddContinue() {
 	for _, t := range m.timers {
@@ -403,7 +405,7 @@ func (m *windowTimerPanelModel) quickAddContinue() {
 			return
 		}
 	}
-	t, err := addWindowTimer(m.windowID, "continue", "reset", "", "0", true, false)
+	t, err := addWindowTimer(m.windowID, "continue", "reset", "", "0", true, true)
 	if err != nil {
 		m.setStatus("error: " + err.Error())
 		return
@@ -414,14 +416,15 @@ func (m *windowTimerPanelModel) quickAddContinue() {
 
 // copyOtherTimerToCurrent clones the selected other-window timer onto the
 // current window, round-tripping its config through the same string forms the
-// add form accepts.
+// add form accepts. Like every one-key clone it defaults to auto-delete — the
+// source timer (and History) keeps the reusable template.
 func (m *windowTimerPanelModel) copyOtherTimerToCurrent() {
 	src := m.selectedAllTimer()
 	if src == nil {
 		return
 	}
 	t, err := addWindowTimer(m.windowID, src.Content, timerTriggerInput(src),
-		timerLoopInput(src), strconv.Itoa(src.MaxExecutions), src.SendEnter, src.DeleteOnDone)
+		timerLoopInput(src), strconv.Itoa(src.MaxExecutions), src.SendEnter, true)
 	if err != nil {
 		m.setStatus("copy failed: " + err.Error())
 		return
@@ -432,6 +435,8 @@ func (m *windowTimerPanelModel) copyOtherTimerToCurrent() {
 
 // copyHistoryToCurrent clones the selected history entry straight into an
 // active timer on the current window (Enter merely prefills the add form).
+// One-key clones default to auto-delete: the durable template lives in the
+// History library, so the cloned instance shouldn't linger after it's done.
 func (m *windowTimerPanelModel) copyHistoryToCurrent() {
 	e := m.selectedHistory()
 	if e == nil {
@@ -441,7 +446,7 @@ func (m *windowTimerPanelModel) copyHistoryToCurrent() {
 	if max == "" {
 		max = "0"
 	}
-	t, err := addWindowTimer(m.windowID, e.Content, e.Trigger, e.Loop, max, e.SendEnter, false)
+	t, err := addWindowTimer(m.windowID, e.Content, e.Trigger, e.Loop, max, e.SendEnter, true)
 	if err != nil {
 		m.setStatus("copy failed: " + err.Error())
 		return

@@ -908,7 +908,13 @@ func configLockDir() string {
 // acquireConfigLock takes the cross-process mkdir lock, preempting a stale lock
 // (mtime older than configLockStale). Returns a release func.
 func acquireConfigLock() (func(), error) {
-	dir := configLockDir()
+	return acquireMkdirLock(configLockDir(), configLockStale)
+}
+
+// acquireMkdirLock is the shared cross-process mutex primitive: an atomic
+// os.Mkdir claims the lock, a waiter preempts it when its mtime exceeds stale
+// (holder crashed). Used for the app config and the window-timer store.
+func acquireMkdirLock(dir string, stale time.Duration) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return nil, err
 	}
@@ -918,7 +924,7 @@ func acquireConfigLock() (func(), error) {
 		} else if !os.IsExist(err) {
 			return nil, err
 		}
-		if info, statErr := os.Stat(dir); statErr == nil && time.Since(info.ModTime()) > configLockStale {
+		if info, statErr := os.Stat(dir); statErr == nil && time.Since(info.ModTime()) > stale {
 			_ = os.Remove(dir) // preempt abandoned lock
 			continue
 		}

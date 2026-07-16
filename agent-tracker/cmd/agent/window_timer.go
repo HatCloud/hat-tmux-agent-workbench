@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -86,6 +87,8 @@ func setTimerTimezone(value string) error {
 		return err
 	}
 
+	release := acquireTimerLock()
+	defer release()
 	timers := loadWindowTimers()
 	dirty := false
 	now := time.Now().In(loc)
@@ -140,25 +143,32 @@ type windowTimer struct {
 }
 
 type windowTimerStore struct {
-	Timers []*windowTimer `json:"timers"`
+	// ServerPID records which tmux server's window-id space the timers belong
+	// to. Window ids (@N) are only unique within one server lifetime: after a
+	// server restart (crash / workspace restore) new windows recycle old ids,
+	// so timers from a previous server must be invalidated wholesale or a new
+	// window inherits — and gets injected with — another window's timers.
+	ServerPID int            `json:"server_pid,omitempty"`
+	Timers    []*windowTimer `json:"timers"`
 }
 
 // ── persistence ───────────────────────────────────────────────────────────────
 
-func loadWindowTimers() []*windowTimer {
+func loadWindowTimerStore() *windowTimerStore {
+	var store windowTimerStore
 	data, err := os.ReadFile(paths.TimersFile())
 	if err != nil {
-		return nil
+		return &store
 	}
-	var store windowTimerStore
-	if err := json.Unmarshal(data, &store); err != nil {
-		return nil
-	}
-	return store.Timers
+	_ = json.Unmarshal(data, &store)
+	return &store
 }
 
-func saveWindowTimers(timers []*windowTimer) error {
-	store := windowTimerStore{Timers: timers}
+func loadWindowTimers() []*windowTimer {
+	return loadWindowTimerStore().Timers
+}
+
+func saveWindowTimerStore(store *windowTimerStore) error {
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
 		return err
@@ -168,6 +178,61 @@ func saveWindowTimers(timers []*windowTimer) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// saveWindowTimers persists timers, preserving the store's ownership stamp.
+func saveWindowTimers(timers []*windowTimer) error {
+	store := loadWindowTimerStore()
+	store.Timers = timers
+	return saveWindowTimerStore(store)
+}
+
+// tmuxServerPID identifies the current tmux server (0 when unreachable).
+func tmuxServerPID() int {
+	out, err := runTmuxOutput("display-message", "-p", "#{pid}")
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// reconcileTimerOwnership drops timers that can no longer belong to any live
+// window and reports whether the store changed. Two layers:
+//   - serverPID differs from the stamped one → the id space was reset (tmux
+//     server restarted); every stored timer references a dead window whose id a
+//     NEW window may recycle, so all of them are invalidated.
+//   - same server → timers whose window is gone are dropped (a closed window's
+//     timer can never fire again; the History library keeps the template).
+//
+// serverPID==0 (tmux unreachable for the pid probe) skips the wipe/stamp; an
+// empty live set is untrustworthy (any session has ≥1 window) and skips the
+// orphan drop.
+func reconcileTimerOwnership(store *windowTimerStore, serverPID int, live map[string]bool) bool {
+	changed := false
+	if serverPID != 0 && store.ServerPID != serverPID {
+		if store.ServerPID != 0 && len(store.Timers) > 0 {
+			store.Timers = nil
+		}
+		store.ServerPID = serverPID
+		changed = true
+	}
+	if len(live) == 0 {
+		return changed
+	}
+	kept := store.Timers[:0]
+	for _, t := range store.Timers {
+		if live[t.WindowID] {
+			kept = append(kept, t)
+		} else {
+			changed = true
+		}
+	}
+	store.Timers = kept
+	return changed
 }
 
 func lastPathElem(path string) string {
@@ -255,8 +320,22 @@ func recordTimerHistory(windowID, content, trigger, loop, max string, sendEnter 
 	if strings.TrimSpace(content) == "" {
 		return
 	}
+	release := acquireTimerHistoryLock()
+	defer release()
 	entries := upsertHistory(loadTimerHistory(), windowID, content, trigger, loop, max, sendEnter, windowTimerNow())
 	_ = saveTimerHistory(entries)
+}
+
+// acquireTimerHistoryLock guards the history file's load-modify-write. A lock
+// of its own (not acquireTimerLock) because addWindowTimer records history
+// while already holding the timer lock — the mkdir lock is not reentrant.
+func acquireTimerHistoryLock() func() {
+	dir := filepath.Join(filepath.Dir(paths.TimerHistoryFile()), ".timer-history.lock.d")
+	release, err := acquireMkdirLock(dir, configLockStale)
+	if err != nil {
+		return func() {}
+	}
+	return release
 }
 
 // timerHistoryAll returns every window's history merged into one list, deduped
@@ -286,6 +365,8 @@ func timerHistoryAll() []*windowTimerHistoryEntry {
 // panel shows the deduped global list, so a delete must not let another
 // window's copy of the same combo resurface.
 func deleteTimerHistoryCombo(content, trigger, loop, max string, sendEnter bool) error {
+	release := acquireTimerHistoryLock()
+	defer release()
 	entries := loadTimerHistory()
 	kept := entries[:0]
 	for _, e := range entries {
@@ -451,7 +532,13 @@ func computeNextLoopFireAt(t *windowTimer, prevFire time.Time) time.Time {
 func computeNextLoopFireAtFrom(t *windowTimer, prevFire, now time.Time, loc *time.Location) time.Time {
 	switch t.LoopMode {
 	case windowTimerLoopInterval:
-		return prevFire.Add(time.Duration(t.LoopIntervalSec) * time.Second)
+		next := prevFire.Add(time.Duration(t.LoopIntervalSec) * time.Second)
+		if !next.After(now) {
+			// Sleep/downtime swallowed whole periods: re-anchor to now instead of
+			// replaying every missed period as an immediate one-per-tick burst.
+			next = now.Add(time.Duration(t.LoopIntervalSec) * time.Second)
+		}
+		return next
 	case windowTimerLoopDaily:
 		parts := strings.SplitN(t.TriggerTime, ":", 2)
 		if len(parts) != 2 {
@@ -675,17 +762,56 @@ func sanitizeBufferName(s string) string {
 	}, s)
 }
 
+// acquireTimerLock serializes every load-modify-write of the timer store and
+// history files across processes — the timer panel (its own tea process) and
+// the sync loop mutate the same files, and an unlocked read-modify-write races
+// away one side's save (e.g. a fire-count update overwriting a just-added
+// timer). Best-effort: on lock failure proceed unlocked rather than dropping
+// the operation.
+func acquireTimerLock() func() {
+	dir := filepath.Join(filepath.Dir(paths.TimersFile()), ".timers.lock.d")
+	release, err := acquireMkdirLock(dir, configLockStale)
+	if err != nil {
+		return func() {}
+	}
+	return release
+}
+
+// reconcileTimerOwnershipLive runs reconcileTimerOwnership against the live
+// tmux state (current server pid + live window set).
+func reconcileTimerOwnershipLive(store *windowTimerStore) bool {
+	live := map[string]bool{}
+	if out, err := runTmuxOutput("list-windows", "-a", "-F", "#{window_id}"); err == nil {
+		for _, id := range strings.Fields(out) {
+			live[id] = true
+		}
+	}
+	return reconcileTimerOwnership(store, tmuxServerPID(), live)
+}
+
 // checkAndFireTimers checks all timers and fires any that are due.
 // Called from the main sync loop every ~1 second; ci is that pass's shared
 // index (nil for one-shot callers).
 // Mutates and persists the timer store if any timers fire or are updated.
 func checkAndFireTimers(ci *claudeIndex) {
-	timers := loadWindowTimers()
+	release := acquireTimerLock()
+	defer release()
+	store := loadWindowTimerStore()
+	// Drop timers stranded by a tmux server restart (recycled window ids) or a
+	// closed window BEFORE firing — a recycled id would otherwise inject an
+	// unrelated window's pane.
+	dirty := false
+	if len(store.Timers) > 0 {
+		dirty = reconcileTimerOwnershipLive(store)
+	}
+	timers := store.Timers
 	if len(timers) == 0 {
+		if dirty {
+			_ = saveWindowTimerStore(store)
+		}
 		return
 	}
 	now := windowTimerNow()
-	dirty := false
 	doneDelete := map[string]bool{}
 	// Account-wide wake signal for dormant/fallback-armed reset timers, resolved
 	// lazily at most once per tick: any window's future @agent_limit_reset_at stamp.
@@ -723,8 +849,12 @@ func checkAndFireTimers(ci *claudeIndex) {
 		if !now.After(t.NextFireAt) {
 			continue
 		}
-		// Fire the timer
-		_ = fireTimer(t, ci)
+		// Fire the timer. A failure (pane vanished mid-tick, tmux timeout) still
+		// advances the schedule — retrying stale content into a changed pane is
+		// worse than skipping — but is logged so silent no-shows are traceable.
+		if err := fireTimer(t, ci); err != nil {
+			fmt.Fprintf(os.Stderr, "agent: timer %s (window %s) fire failed: %v\n", t.ID, t.WindowID, err)
+		}
 		t.ExecutionCount++
 		t.QuotaFallback = false
 		dirty = true
@@ -757,7 +887,8 @@ func checkAndFireTimers(ci *claudeIndex) {
 		timers = kept
 	}
 	if dirty {
-		_ = saveWindowTimers(timers)
+		store.Timers = timers
+		_ = saveWindowTimerStore(store)
 	}
 }
 
@@ -835,9 +966,14 @@ func addWindowTimer(windowID, content, triggerStr, loopStr, maxStr string, sendE
 		t.NextFireAt = computeNextFireAt(t)
 	}
 
-	timers := loadWindowTimers()
-	timers = append(timers, t)
-	if err := saveWindowTimers(timers); err != nil {
+	release := acquireTimerLock()
+	defer release()
+	store := loadWindowTimerStore()
+	// Clean + stamp ownership on the way in, so a timer added right after a
+	// tmux server restart lands in a store already claimed by this server.
+	_ = reconcileTimerOwnershipLive(store)
+	store.Timers = append(store.Timers, t)
+	if err := saveWindowTimerStore(store); err != nil {
 		return nil, err
 	}
 	recordTimerHistory(windowID, content, triggerStr, loopStr, maxStr, sendEnter)
@@ -861,6 +997,8 @@ func updateWindowTimer(id, windowID, content, triggerStr, loopStr, maxStr string
 	if err != nil {
 		return err
 	}
+	release := acquireTimerLock()
+	defer release()
 	timers := loadWindowTimers()
 	for _, t := range timers {
 		if t.ID != id || t.WindowID != windowID {
@@ -895,6 +1033,8 @@ func updateWindowTimer(id, windowID, content, triggerStr, loopStr, maxStr string
 
 // deleteWindowTimer removes a timer by ID.
 func deleteWindowTimer(id, windowID string) error {
+	release := acquireTimerLock()
+	defer release()
 	timers := loadWindowTimers()
 	newTimers := timers[:0]
 	for _, t := range timers {
@@ -908,6 +1048,8 @@ func deleteWindowTimer(id, windowID string) error {
 
 // toggleWindowTimer enables/disables a timer by ID.
 func toggleWindowTimer(id, windowID string) error {
+	release := acquireTimerLock()
+	defer release()
 	timers := loadWindowTimers()
 	for _, t := range timers {
 		if t.ID != id || t.WindowID != windowID {
