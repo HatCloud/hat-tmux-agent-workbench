@@ -2,7 +2,8 @@
 set -euo pipefail
 
 current_session_id="${1:-}"
-current_session_name="${2:-}"
+# $2 = session_name：调用方（tmux.conf status-left）仍传入，脚本当前不用；
+# 不读它、只占参数位，保持调用签名稳定。
 term_width="${3:-}"
 status_bg="${4:-}"
 

@@ -22,7 +22,7 @@
 
 三个 Go 二进制（`agent-tracker/cmd/`）：
 
-- **tracker-server** — 常驻 daemon。监听 Unix socket，处理 `start_task`/`finish_task`/`update_task`/`mark_asking`/`acknowledge`/`delete_task`/`notify`/`notifications_toggle`/`set_notification_group_mode`。任务状态在**内存**，经 socket 回 `agent tracker state` 的 JSON 暴露，不持久化（旧的 `agents.json` workspace registry 已随 agent-workspace 重机制一并剔除，见 `docs/handoff/agent-workspace-assessment.md`）。
+- **tracker-server** — 常驻 daemon。监听 Unix socket，处理 `start_task`/`finish_task`/`update_task`/`mark_asking`/`acknowledge`/`delete_task`/`notify`/`notifications_toggle`/`set_notification_group_mode`。任务状态在**内存**，经 socket 回 `agent tracker state` 的 JSON 暴露，不持久化（旧的 `agents.json` workspace registry 已随 agent-workspace 重机制一并剔除）。
 - **tracker-mcp** — MCP server，给 Claude 暴露 `tracker_mark_start_working` 等 tool，转成 socket command 发给 daemon。
 - **agent** — 多用途 CLI/TUI：`agent tracker command <sub>`（发 socket 命令）、`agent tracker state`（查状态）、`agent tmux on-focus`（聚焦时拼窗口名+rename）、`agent tmux sync-names`（状态栏每 3 秒发轻量触发、内部把完整轮询限流为 5s，把所有 agent 窗口名同步成各自主 AI pane 的 Claude/Codex 会话标题）、`agent palette`（bubbletea 工作空间总览）、`agent tmux right-status`（状态栏右侧渲染）、`agent ime switch`（cgo 调 Carbon `TISSelectInputSource` 切输入源到 ABC，由 tmux prefix 的 root-table 绑定调用，见 `cmd/agent/ime_darwin.go`；不连 daemon 的快路径）。
 
