@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/david/agent-tracker/internal/ipc"
+	"github.com/david/agent-tracker/internal/statustag"
 )
 
 // Claude Code writes one <pid>.json per running session under ~/.claude/sessions,
@@ -658,25 +659,11 @@ func (ci claudeIndex) sessionForPanePID(panePID int) (claudeSessionMeta, int, bo
 }
 
 // statusTag maps a Claude session status to the window-name prefix.
+// statusTag renders a live status as its window-name prefix. The vocabulary
+// (and the shell→busy / waiting→asking aliasing) lives in internal/statustag,
+// shared with tracker-server's remote-prefix parsing.
 func statusTag(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "busy", "shell":
-		// "shell" = turn ended but background shell/subagent work still running.
-		// It's an active state, so surface it as busy ([B]) rather than falling
-		// through to no prefix. Task-completion semantics stay separate (see
-		// reconcileActions), so this only affects the visual tab prefix.
-		return "[B] "
-	case "idle":
-		return "[I] "
-	case "asking", "waiting", "paused":
-		return "[?] "
-	case "limited":
-		return "[L] "
-	case "error":
-		return "[E] "
-	default:
-		return ""
-	}
+	return statustag.ForStatus(status)
 }
 
 // providersRelDir is the provider .env directory relative to home
@@ -737,6 +724,31 @@ func providerForPID(pid int, providers map[string]string) string {
 	return "anthropic"
 }
 
+// Pane roles stamped into @agent_pane_role by tmux/scripts/build_agent_layout.sh.
+// The shell side writes these exact literals; there is no compile-time bridge
+// across the process boundary, so a change here must be mirrored in that script
+// (and vice versa). reconcileWindowOrientation logs role-set drift so a typo on
+// either side surfaces instead of silently disabling reflow.
+const (
+	paneRoleAI  = "ai"
+	paneRoleGit = "git"
+	paneRoleRun = "run"
+)
+
+// paneRoleWarned throttles pane-role drift logs to once per distinct signature
+// per window per process (the sync pass is a short-lived CLI, so this resets
+// naturally each run; it exists to keep one pass from logging N times).
+var paneRoleWarned = map[string]string{}
+
+func warnPaneRoleDrift(windowID, rolesOut string) {
+	sig := strings.Join(strings.Fields(rolesOut), ",")
+	if paneRoleWarned[windowID] == sig {
+		return
+	}
+	paneRoleWarned[windowID] = sig
+	fmt.Fprintf(os.Stderr, "agent: window %s pane roles %q don't match ai/git/run; skipping reflow\n", windowID, sig)
+}
+
 // agentAIPane returns the window's primary AI pane (@agent_pane_role=ai),
 // falling back to its active pane. Empty when the window has no panes.
 func agentAIPane(windowID string, ci *claudeIndex) string {
@@ -754,7 +766,7 @@ func agentAIPane(windowID string, ci *claudeIndex) string {
 		if len(parts) != 3 || parts[0] == "" {
 			continue
 		}
-		if parts[1] == "ai" {
+		if parts[1] == paneRoleAI {
 			return parts[0]
 		}
 		paneIDs = append(paneIDs, parts[0])
@@ -1054,22 +1066,12 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 //
 // extractStatusPrefix returns the leading agent status prefix from name.
 func extractStatusPrefix(name string) string {
-	for _, p := range []string{"[B] ", "[I] ", "[?] ", "[L] ", "[E] "} {
-		if strings.HasPrefix(name, p) {
-			return p
-		}
-	}
-	return ""
+	return statustag.Prefix(name)
 }
 
 // stripStatusPrefix removes a leading agent status prefix if present.
 func stripStatusPrefix(name string) string {
-	name = strings.TrimPrefix(name, "[B] ")
-	name = strings.TrimPrefix(name, "[I] ")
-	name = strings.TrimPrefix(name, "[?] ")
-	name = strings.TrimPrefix(name, "[L] ")
-	name = strings.TrimPrefix(name, "[E] ")
-	return name
+	return statustag.Strip(name)
 }
 
 //   - Current name is empty/blank: user cleared it — resume auto-naming.
@@ -1370,7 +1372,13 @@ func reconcileWindowOrientation(windowID string) {
 		roles[r] = true
 		n++
 	}
-	if n != 3 || !roles["ai"] || !roles["git"] || !roles["run"] {
+	if n != 3 || !roles[paneRoleAI] || !roles[paneRoleGit] || !roles[paneRoleRun] {
+		// Roles present but not the expected ai/git/run trio = drift between this
+		// constant set and build_agent_layout.sh (or a half-rebuilt layout). Log it
+		// once per distinct signature so the skip is traceable instead of silent.
+		if n > 0 {
+			warnPaneRoleDrift(windowID, out)
+		}
 		return
 	}
 	current := tmuxWindowOption(windowID, "@agent_orientation")
@@ -1465,7 +1473,7 @@ func layoutProportionsOK(windowID, orientation string) bool {
 	found := false
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		parts := strings.Split(line, "|")
-		if len(parts) == 3 && parts[0] == "ai" {
+		if len(parts) == 3 && parts[0] == paneRoleAI {
 			aiW, _ = strconv.Atoi(parts[1])
 			aiH, _ = strconv.Atoi(parts[2])
 			found = true
@@ -1497,6 +1505,10 @@ func layoutProportionsOK(windowID, orientation string) bool {
 // desiredOrientation maps window dimensions to landscape/portrait with a hysteresis
 // dead-band, so a window hovering near square doesn't flip-flop every poll. Terminal
 // cells are ~2x taller than wide, so a visually square window has width == 2*height.
+// tmux/scripts/orientation_for_window.sh shares that physical assumption with a
+// deliberately DIFFERENT threshold (hard 2.0 for one-shot window creation vs this
+// 2.2/1.8 runtime dead-band) — change the assumption in both places, but do NOT
+// unify the numbers (see docs/audit 2026-07-15 I-7).
 func desiredOrientation(w, h int, current string) string {
 	switch {
 	case w*10 >= h*22: // clearly wide

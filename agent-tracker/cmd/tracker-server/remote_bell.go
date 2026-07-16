@@ -12,6 +12,7 @@ import (
 
 	"github.com/david/agent-tracker/internal/ipc"
 	"github.com/david/agent-tracker/internal/paths"
+	"github.com/david/agent-tracker/internal/statustag"
 )
 
 // Remote-bell mirroring: when the user is ssh'd into another machine from a tmux
@@ -73,20 +74,9 @@ func remoteStatusCanon(status string) string {
 // name carries (written by that machine's own sync-names) and maps it to a
 // status. This mirrors exactly what the user would see on the remote window.
 func remoteWindowStatusPrefix(name string) string {
-	switch {
-	case strings.HasPrefix(name, "[E] "):
-		return "error"
-	case strings.HasPrefix(name, "[?] "):
-		return "asking"
-	case strings.HasPrefix(name, "[L] "):
-		return "limited"
-	case strings.HasPrefix(name, "[B] "):
-		return "busy"
-	case strings.HasPrefix(name, "[I] "):
-		return "idle"
-	default:
-		return ""
-	}
+	// The prefix vocabulary is shared with cmd/agent via internal/statustag —
+	// this parses back exactly what the remote's agent rendered.
+	return statustag.StatusOf(name)
 }
 
 // remoteTaskStatus resolves one remote task's live status, preferring the window

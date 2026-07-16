@@ -92,8 +92,11 @@ if [[ "$resume" == "1" ]]; then
   [[ -n "$resume_arg" ]] && ai_cmd="$ai_cmd $resume_arg"
 fi
 
-# Build the ai/git/run layout in $win (a window id with a single pane) and start
-# the client in the ai pane. Window @agent_* vars feed the on-focus rename.
+# Abbreviate a path for the @agent_dir window option: $HOME→~, intermediate
+# segments to first char (hidden dirs to 2 chars), last segment kept whole.
+# Mirrors agent-tracker/cmd/agent/main.go's abbrevPath — the two must stay in
+# sync (regression-guarded by scripts/tests/agent_helpers_test.sh and Go-side
+# TestAbbrevPath; change one, run both).
 _abbrev_dir() {
   local path="${1/#$HOME/~}"
   local IFS='/' result i seg
@@ -136,6 +139,8 @@ _main_repo_dir() {
   fi
 }
 
+# Build the ai/git/run layout in $win (a window id with a single pane) and start
+# the client in the ai pane. Window @agent_* vars feed the on-focus rename.
 build_layout() {
   local win="$1" ai_pane
   # 三格 ai/git/run 切分 + lazygit + @agent_pane_role 由 build_agent_layout.sh
