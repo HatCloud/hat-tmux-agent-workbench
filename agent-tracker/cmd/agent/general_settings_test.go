@@ -10,17 +10,17 @@ func TestPollIntervalDuration(t *testing.T) {
 		raw  string
 		want time.Duration
 	}{
-		{"", 3 * time.Second},        // default
-		{"1s", 1 * time.Second},      // preset
-		{"3s", 3 * time.Second},      // preset
-		{"10s", 10 * time.Second},    // preset
-		{"5", 5 * time.Second},       // bare number = seconds
+		{"", 3 * time.Second},     // default
+		{"1s", 1 * time.Second},   // preset
+		{"3s", 3 * time.Second},   // preset
+		{"10s", 10 * time.Second}, // preset
+		{"5", 5 * time.Second},    // bare number = seconds
 		{"500ms", 500 * time.Millisecond},
-		{"garbage", 3 * time.Second}, // unparsable → fallback
-		{"0", 500 * time.Millisecond}, // clamp min
+		{"garbage", 3 * time.Second},    // unparsable → fallback
+		{"0", 500 * time.Millisecond},   // clamp min
 		{"1ms", 500 * time.Millisecond}, // clamp min
-		{"120s", 60 * time.Second},   // clamp max
-		{"999", 60 * time.Second},    // clamp max (bare number)
+		{"120s", 60 * time.Second},      // clamp max
+		{"999", 60 * time.Second},       // clamp max (bare number)
 	}
 	for _, c := range cases {
 		got := pollIntervalDuration(appConfig{PollInterval: c.raw})

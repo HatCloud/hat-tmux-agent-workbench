@@ -73,6 +73,7 @@ type claudeTurnError struct {
 //     connection/mid-response drops.
 //   - unknown WITHOUT a status — socket-closed / timeout network blips.
 //   - any explicit 5xx (defensive).
+//
 // Not retryable: 429 (→ "limited", handled separately), authentication_failed,
 // invalid_request, model_not_found, max_output_tokens, and unknown WITH a 4xx
 // status (402 billing / 400 bad request) — retrying can't fix those.

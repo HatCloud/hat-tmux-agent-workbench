@@ -59,13 +59,13 @@ func TestRetryable(t *testing.T) {
 		st   int
 		want bool
 	}{
-		{"server_error", 529, true},   // overloaded
-		{"server_error", 500, true},   // internal
-		{"server_error", 0, true},     // connection closed / server mid-response
-		{"unknown", 0, true},          // socket closed / operation timed out
-		{"unknown", 402, false},       // billing
-		{"unknown", 400, false},       // bad request
-		{"rate_limit", 429, false},    // → limited, never retried here
+		{"server_error", 529, true}, // overloaded
+		{"server_error", 500, true}, // internal
+		{"server_error", 0, true},   // connection closed / server mid-response
+		{"unknown", 0, true},        // socket closed / operation timed out
+		{"unknown", 402, false},     // billing
+		{"unknown", 400, false},     // bad request
+		{"rate_limit", 429, false},  // → limited, never retried here
 		{"authentication_failed", 401, false},
 		{"authentication_failed", 0, false},
 		{"invalid_request", 400, false},
