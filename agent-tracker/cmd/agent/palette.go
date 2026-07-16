@@ -23,32 +23,14 @@ const (
 	paletteModeGeneral
 )
 
-type palettePromptField int
-
-const (
-	palettePromptFieldName palettePromptField = iota
-	palettePromptFieldDevice
-	palettePromptFieldWorktree
-)
-
-type palettePromptKind int
-
-const (
-	palettePromptStartAgent palettePromptKind = iota
-)
-
 type paletteActionKind int
 
 const (
-	paletteActionPromptStartAgent paletteActionKind = iota
-	paletteActionOpenActivityMonitor
-	paletteActionConfirmDestroy
+	paletteActionOpenActivityMonitor paletteActionKind = iota
 	paletteActionReloadTmuxConfig
 	paletteActionOpenStatusRight
 	paletteActionOpenSnippets
 	paletteActionOpenTodos
-	paletteActionOpenDevices
-	paletteActionOpenTracker
 	paletteActionOpenSettings
 	paletteActionOpenWindowNav
 )
@@ -59,7 +41,6 @@ type paletteAction struct {
 	Subtitle string
 	Keywords []string
 	Kind     paletteActionKind
-	RepoRoot string
 }
 
 type paletteResultKind int
@@ -73,32 +54,21 @@ const (
 )
 
 type paletteResult struct {
-	Kind         paletteResultKind
-	Action       paletteAction
-	Input        string
-	Device       string
-	KeepWorktree bool
-	State        paletteUIState
+	Kind   paletteResultKind
+	Action paletteAction
+	Input  string
+	State  paletteUIState
 }
 
 type paletteUIState struct {
-	Filter              []rune
-	FilterCursor        int
-	SearchActive        bool
-	Selected            int
-	ActionOffset        int
-	Mode                paletteMode
-	PromptText          []rune
-	PromptCursor        int
-	PromptKind          palettePromptKind
-	PromptField         palettePromptField
-	PromptRepoRoot      string
-	PromptDevices       []string
-	PromptDeviceIndex   int
-	PromptKeepWorktree  bool
-	ShowAltHints        bool
-	Message             string
-	ConfirmRequiresText bool
+	Filter       []rune
+	FilterCursor int
+	SearchActive bool
+	Selected     int
+	ActionOffset int
+	Mode         paletteMode
+	ShowAltHints bool
+	Message      string
 }
 
 // snippet types, loadSnippets, extractSnippetVars, renderSnippet and the

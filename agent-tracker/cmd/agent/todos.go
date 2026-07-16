@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -234,84 +233,6 @@ func importLegacyYamlTodos(store *tmuxTodoStore) error {
 	return nil
 }
 
-func collectAllTmuxTodos(currentSessionID, currentWindowID string) []tmuxTodoEntry {
-	store, err := loadTmuxTodoStore()
-	if err != nil {
-		return nil
-	}
-	entries := make([]tmuxTodoEntry, 0, len(store.Global))
-	for idx, item := range store.Global {
-		entries = append(entries, tmuxTodoEntry{
-			Title:     item.Title,
-			Done:      item.Done,
-			Priority:  item.Priority,
-			Scope:     todoScopeGlobal,
-			ScopeID:   "global",
-			ScopeName: "Global",
-			IsCurrent: true,
-			ItemIndex: idx,
-		})
-	}
-	sessionIDs := make([]string, 0, len(store.Sessions))
-	for id := range store.Sessions {
-		sessionIDs = append(sessionIDs, id)
-	}
-	sort.Strings(sessionIDs)
-	for _, id := range sessionIDs {
-		for idx, item := range store.Sessions[id] {
-			entries = append(entries, tmuxTodoEntry{
-				Title:     item.Title,
-				Done:      item.Done,
-				Priority:  item.Priority,
-				Scope:     todoScopeSession,
-				ScopeID:   id,
-				ScopeName: "Session",
-				IsCurrent: strings.TrimSpace(id) == strings.TrimSpace(currentSessionID),
-				ItemIndex: idx,
-			})
-		}
-	}
-	windowIDs := make([]string, 0, len(store.Windows))
-	for id := range store.Windows {
-		windowIDs = append(windowIDs, id)
-	}
-	sort.Strings(windowIDs)
-	for _, id := range windowIDs {
-		for idx, item := range store.Windows[id] {
-			entries = append(entries, tmuxTodoEntry{
-				Title:     item.Title,
-				Done:      item.Done,
-				Priority:  item.Priority,
-				Scope:     todoScopeWindow,
-				ScopeID:   id,
-				ScopeName: "Window",
-				IsCurrent: strings.TrimSpace(id) == strings.TrimSpace(currentWindowID),
-				ItemIndex: idx,
-			})
-		}
-	}
-	return entries
-}
-
-func sortTmuxTodosByScope(entries []tmuxTodoEntry, scopePriority todoScope) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		ei, ej := entries[i], entries[j]
-		if ei.IsCurrent != ej.IsCurrent {
-			return ei.IsCurrent
-		}
-		if ei.Scope != ej.Scope {
-			if ei.Scope == scopePriority {
-				return true
-			}
-			if ej.Scope == scopePriority {
-				return false
-			}
-			return ei.Scope < ej.Scope
-		}
-		return false
-	})
-}
-
 func addTmuxTodo(scope todoScope, scopeID, title string) error {
 	store, err := loadTmuxTodoStore()
 	if err != nil {
@@ -394,20 +315,6 @@ func moveTmuxTodoToScopeByIndex(scope todoScope, scopeID string, index int, targ
 	setTodoItemsForScope(store, scope, scopeID, items)
 	setTodoItemsForScope(store, targetScope, targetScopeID, targetItems)
 	return saveTmuxTodoStore(store)
-}
-
-func countOpenTmuxTodos(scope todoScope, scopeID string) (int, error) {
-	store, err := loadTmuxTodoStore()
-	if err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, item := range todoItemsForScope(store, scope, scopeID) {
-		if !item.Done {
-			count++
-		}
-	}
-	return count, nil
 }
 
 func getCurrentTmuxScopeInfo() (sessionID, windowID string) {

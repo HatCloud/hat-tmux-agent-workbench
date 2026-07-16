@@ -60,58 +60,20 @@ fi
 
 "$HOME/.hat-config/tmux/tmux-status/tracker_cache.sh" 2>/dev/null || true
 
-CACHE_FILE="$HOME/.hat-config/state/agent-tracker/tmux-tracker-cache.json"
-tracker_state=""
-if [[ -f "$CACHE_FILE" ]]; then
-  tracker_state=$(cat "$CACHE_FILE" 2>/dev/null || true)
-fi
-
-question_state=$(tmux list-panes -a -F '#{session_id}::#{@op_question_pending}' 2>/dev/null || true)
-
-# Session 图标 = 该 session 下「当前存在的」window 图标的聚合，与窗口级
-# window_task_icon.sh 同源：bell=未读注意力（asking 或 completed 未 ack），
-# watch(⏳)=有窗口实时 busy（名字 [B] 前缀）。**不**用 tracker 的 in_progress
-# 直接当 ⏳——daemon cache 会残留已关闭窗口的 stale in_progress task，否则全 idle
-# 仍误亮 ⏳；只统计当前 window 也避免 stale task 把 bell/watch 串到别的 session。
+# Session 图标 = 该 session 下 window 图标的聚合：🔔=任一窗口 @agent_icon 有铃
+# （daemon reconcileWindowIcons 预计算，本地任务铃与远端透传铃同源收口在那），
+# ⏳=任一窗口实时 busy（窗口名 [B] 前缀，sync-names 写；全 idle 自然消失）。
+# 不再自行解析 tracker cache——图标真身归 daemon，一处计算多处引用。
 get_session_icon() {
   local sid="$1"
-  local has_question=0 has_bell=0 has_watch=0 has_fail=0
-
-  local question_pane
-  question_pane=$(grep -F -m1 -x "${sid}::1" <<< "$question_state" || true)
-  [[ -n "$question_pane" ]] && has_question=1
-
-  local -a wids=()
-  local line wid unread wfail watching rbell wname
-  while IFS='|' read -r wid unread wfail watching rbell wname; do
-    [[ -z "$wid" ]] && continue
-    wids+=("$wid")
-    [[ "$unread" == "1" ]] && has_bell=1
-    [[ "$unread" == "1" && "$wfail" == "1" ]] && has_fail=1
-    [[ "$rbell" == "1" ]] && has_bell=1
-    [[ "$watching" == "1" ]] && has_watch=1
-    # 实时 busy：窗口名 [B] 前缀（sync-names 每 3 秒写），全 idle 时自然消失
+  local has_bell=0 has_watch=0
+  local icon wname
+  while IFS='|' read -r icon wname; do
+    [[ "$icon" == *🔔* ]] && has_bell=1
     [[ "$wname" == '[B]'* ]] && has_watch=1
-  done < <(tmux list-windows -t "$sid" \
-    -F '#{window_id}|#{@unread}|#{@watch_failed}|#{@watching}|#{@agent_remote_bell}|#{window_name}' 2>/dev/null || true)
+  done < <(tmux list-windows -t "$sid" -F '#{@agent_icon}|#{window_name}' 2>/dev/null || true)
 
-  if [[ -n "$tracker_state" && ${#wids[@]} -gt 0 ]]; then
-    local wids_json bell
-    wids_json=$(printf '%s\n' "${wids[@]}" | jq -R . | jq -s . 2>/dev/null || echo '[]')
-    bell=$(echo "$tracker_state" | jq -r --argjson w "$wids_json" '
-      .tasks // [] | .[]
-      | select(.window_id as $x | $w | index($x))
-      | select((.acknowledged != true) and (.asking == true or .status == "completed"))
-      | "bell"
-    ' 2>/dev/null | head -1 || true)
-    [[ -n "$bell" ]] && has_bell=1
-  fi
-
-  if (( has_question )); then
-    printf '❓'
-  elif (( has_fail )); then
-    printf '❌'
-  elif (( has_bell )); then
+  if (( has_bell )); then
     printf '🔔'
   elif (( has_watch )); then
     printf '⏳'

@@ -21,8 +21,9 @@ import (
 // poller bridges that gap. cmd/agent stamps each ssh window's destination host
 // into @agent_ssh_host; here the daemon reads each remote machine's tracker cache
 // over a reused ssh connection and, when ANY remote window has an unread 🔔,
-// lights the local ssh window's tab 🔔 (via @agent_remote_bell, honored by
-// window_task_icon.sh and Window Nav) and raises one local system notification.
+// lights the local ssh window's tab 🔔 (via @agent_remote_bell, folded into
+// @agent_icon by reconcileWindowIcons and read by Window Nav) and raises one
+// local system notification.
 // State and bell clear in lock-step the moment the remote bell goes away.
 
 const remoteBellPollInterval = 3 * time.Second

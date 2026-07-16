@@ -20,7 +20,6 @@ import (
 
 type appConfig struct {
 	Keys        keyConfig          `json:"keys"`
-	Devices     []string           `json:"devices,omitempty"`
 	StatusRight *statusRightConfig `json:"status_right,omitempty"`
 	WindowName  *windowNameConfig  `json:"window_name,omitempty"`
 	WindowNav   *windowNavConfig   `json:"window_nav,omitempty"`
@@ -676,23 +675,6 @@ func projectDisplayName(path string) string {
 	projectNameCache[clean] = projectNameCacheEntry{name: name, expiresAt: now.Add(projectNameCacheTTL)}
 	projectNameCacheMu.Unlock()
 	return name
-}
-
-func abbrevClient(client string) string {
-	switch strings.ToLower(strings.TrimSpace(client)) {
-	case "":
-		return ""
-	case "claude":
-		return "CL"
-	case "codex":
-		return "CO"
-	default:
-		r := []rune(strings.ToUpper(strings.TrimSpace(client)))
-		if len(r) >= 2 {
-			return string(r[:2])
-		}
-		return string(r)
-	}
 }
 
 // splitSessionLabel splits a "<index>-<label>" session name into its index and

@@ -420,10 +420,6 @@ func newPaletteModel(runtime *paletteRuntime, state paletteUIState) *paletteMode
 		state.Mode = paletteModeList
 	}
 	state.FilterCursor = clampInt(state.FilterCursor, 0, len(state.Filter))
-	state.PromptCursor = clampInt(state.PromptCursor, 0, len(state.PromptText))
-	if len(state.PromptDevices) > 0 {
-		state.PromptDeviceIndex = clampInt(state.PromptDeviceIndex, 0, len(state.PromptDevices)-1)
-	}
 	model := &paletteModel{runtime: runtime, state: state, actions: runtime.buildActions(), openedAt: time.Now()}
 	if state.Mode == paletteModeTodos {
 		_ = model.openTodosPanel()
@@ -1630,17 +1626,6 @@ func renderPaletteFooter(styles paletteStyles, width int, message string, showAl
 	)
 }
 
-func renderPaletteHintLine(styles paletteStyles, width int, showAltHints bool, normalCandidates [][][2]string, altCandidates [][][2]string) string {
-	return pickRenderedShortcutFooter(width, func(pairs [][2]string) string {
-		return renderShortcutPairs(func(v string) string { return styles.shortcutKey.Render(v) }, func(v string) string { return styles.shortcutText.Render(v) }, "  ", pairs)
-	}, func() [][][2]string {
-		if showAltHints {
-			return altCandidates
-		}
-		return normalCandidates
-	}()...)
-}
-
 func paletteTmuxTodoPreviewItems(items []tmuxTodoItem) []paletteTodoPreviewItem {
 	rows := make([]paletteTodoPreviewItem, 0, len(items))
 	for _, item := range items {
@@ -1734,13 +1719,6 @@ func paletteMessageForError(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-func paletteSuccessMessage(err error, success string) string {
-	if err != nil {
-		return ""
-	}
-	return success
 }
 
 func clampInt(value, low, high int) int {

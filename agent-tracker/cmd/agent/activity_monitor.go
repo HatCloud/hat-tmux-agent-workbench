@@ -819,17 +819,6 @@ func compareFloat64(left, right float64) int {
 	}
 }
 
-func compareInt64(left, right int64) int {
-	switch {
-	case left < right:
-		return -1
-	case left > right:
-		return 1
-	default:
-		return 0
-	}
-}
-
 func compareInt(left, right int) int {
 	switch {
 	case left < right:

@@ -137,22 +137,6 @@ func newTodoPanelStyles() todoPanelStyles {
 	}
 }
 
-func runTodoPanel() error {
-	sessionID, windowID := getCurrentTmuxScopeInfo()
-	model, err := newTodoPanelModel(sessionID, windowID)
-	if err != nil {
-		return err
-	}
-	_, err = tea.NewProgram(model, tea.WithMouseCellMotion()).Run()
-	if err != nil {
-		return err
-	}
-	if model.closePalette {
-		return errClosePalette
-	}
-	return nil
-}
-
 func newTodoPanelModel(sessionID, windowID string) (*todoPanelModel, error) {
 	if _, err := loadTmuxTodoStore(); err != nil {
 		return nil, err
@@ -1135,17 +1119,6 @@ func todoScopeLabel(scope todoScope) string {
 		return "GLOBAL"
 	}
 	return "WINDOW"
-}
-
-func todoPriorityLabel(priority int) string {
-	switch normalizeTodoPriority(priority) {
-	case 1:
-		return "high"
-	case 3:
-		return "low"
-	default:
-		return "medium"
-	}
 }
 
 func renderTodoPriorityChip(priority int) string {
