@@ -11,7 +11,12 @@ if [ -f "$LOCK" ]; then
   # 不能用 `stat -f %m ... || stat -c %Y`——GNU 的 -f 是 --file-system，会把文件系统 dump
   # 写到 stdout 且 exit 0，使 || 兜底不触发、变量被垃圾污染。故显式各自尝试、取纯数字。
   lock_mtime="$(stat -c %Y "$LOCK" 2>/dev/null || /usr/bin/stat -f %m "$LOCK" 2>/dev/null)"
-  if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( $(date +%s) - lock_mtime < 10 )); then
+  now="$(date +%s)"
+  # age 须同时满足 >=0 且 <10：未来 mtime（时钟回拨、或锁被写入未来时间）会使
+  # age 为负，若只判 "<10" 则恒真、标志位被永久当"新鲜"，导致自动编号永久
+  # 卡死。未来时间按陈旧处理。
+  age=$(( now - lock_mtime ))
+  if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( age >= 0 && age < 10 )); then
     exit 0
   fi
 fi

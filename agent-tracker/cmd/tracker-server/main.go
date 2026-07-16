@@ -1219,9 +1219,11 @@ func sendSystemNotification(title, message string, action *notificationAction, g
 // execTimeout bounds every tmux/lsappinfo call the daemon makes. Mirrors the 3s
 // cap cmd/agent/main.go's runTmux/runTmuxOutput already use — without it a hung
 // tmux (e.g. a client stuck rendering a huge scrollback, or a swapping server)
-// blocks the caller indefinitely; when that caller holds s.mu (finishTask's probe
-// path), the whole daemon freezes. tracker-server previously had no equivalent
-// wrapper and every tmux/lsappinfo exec was a bare exec.Command.
+// blocks the caller indefinitely. finishTask now probes isWindowWatched outside
+// s.mu specifically to avoid this blocking a caller that holds the lock; this
+// timeout is a second, independent line of defense against the same class of
+// hang for every other tmux/lsappinfo call site. tracker-server previously had
+// no equivalent wrapper and every tmux/lsappinfo exec was a bare exec.Command.
 const execTimeout = 3 * time.Second
 
 // runCommandOutputCtx runs name+args with a timeout, returning combined output.
@@ -1229,6 +1231,17 @@ func runCommandOutputCtx(timeout time.Duration, name string, args ...string) ([]
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+// runCommandStdoutCtx is like runCommandOutputCtx but captures stdout only.
+// Use it when a successful run's stderr can carry diagnostic text that would
+// corrupt the parsed value (e.g. lsappinfo's ASN/bundle-ID parsing) — mixing
+// stderr in via CombinedOutput() can feed stray text into downstream parsing
+// and silently misclassify "is the window being watched".
+func runCommandStdoutCtx(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
 }
 
 func runTmux(args ...string) error {
@@ -1315,11 +1328,11 @@ func frontmostBundleID() string {
 	if err != nil {
 		return ""
 	}
-	asn, err := runCommandOutputCtx(execTimeout, bin, "front")
+	asn, err := runCommandStdoutCtx(execTimeout, bin, "front")
 	if err != nil || strings.TrimSpace(string(asn)) == "" {
 		return ""
 	}
-	out, err := runCommandOutputCtx(execTimeout, bin, "info", "-only", "bundleID", strings.TrimSpace(string(asn)))
+	out, err := runCommandStdoutCtx(execTimeout, bin, "info", "-only", "bundleID", strings.TrimSpace(string(asn)))
 	if err != nil {
 		return ""
 	}

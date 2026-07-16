@@ -280,7 +280,8 @@ func TestFinishTaskDoesNotHoldLockDuringWatch(t *testing.T) {
 	}()
 	select {
 	case <-got: // 拿到锁 → finishTask 没持锁探测 ✓
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(2 * time.Second): // 宽裕窗口——<-started 已确定性等到探测进入（解锁之后），
+		// 拿锁 goroutine 应几乎立即成功；放宽仅为吸收繁忙 CI 上的调度抖动（code review 提示）。
 		close(release)
 		t.Fatal("finishTask 在锁外探测期间仍持有 s.mu：其它操作被冻结")
 	}
