@@ -166,6 +166,8 @@ func (s *server) reconcileRemoteBells() {
 			} else {
 				_ = runTmux("set", "-w", "-t", w.windowID, "@agent_remote_bell", "1")
 			}
+			// @agent_icon derives from the remote bell — reconcile it promptly.
+			s.broadcastStateAsync()
 		}
 		// Mirror the remote's aggregate live status onto the ssh window's name
 		// prefix ([B]/[?]/[E]/…) via @agent_remote_status; sync-names reads it when

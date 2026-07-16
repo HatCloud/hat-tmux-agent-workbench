@@ -165,6 +165,9 @@ func (s *server) run() error {
 	// Mirror remote machines' 🔔 onto their local ssh windows (see remote_bell.go).
 	go s.pollRemoteBells()
 
+	// Drop task records whose window has been closed (see orphan_sweep.go).
+	go s.sweepOrphanTasksLoop()
+
 	// Event-driven detection: react to Claude session-file changes in ~ms instead
 	// of only at the periodic poll (see watcher.go).
 	go s.watchSessionFilesLoop()
@@ -467,9 +470,13 @@ func (s *server) finishTask(target tmuxTarget, note string) (bool, error) {
 	}
 	mergeTaskNamesFromTarget(t, target)
 
-	// 宽限第一段：首次 idle，只开始计时，不改 Status、不通知。
+	// 宽限第一段：首次 idle，只开始计时，不改 Status、不通知。到期后主动触发一次
+	// sync-names 重查——否则提交要搭下一次 periodic 轮询的便车（poll_interval +
+	// status-interval 叠加，完成 🔔 最坏拖到 5s+）。AfterFunc 一次性、经 coalescer
+	// 合并，pending 若被活动信号作废则重查自然 no-op。
 	if t.PendingCompleteAt == nil {
 		t.PendingCompleteAt = &now
+		time.AfterFunc(completionGraceWindow+200*time.Millisecond, s.detectCoalescer.trigger)
 		return false, nil
 	}
 	// 宽限未满：继续等待后续 idle 轮询。
@@ -961,6 +968,8 @@ func (s *server) broadcastState() {
 	// 🔔 cleared (by acknowledge, a restarted task, or a deletion) gets its
 	// system notification removed in lock-step.
 	s.reconcileNotifications()
+	// Keep window tab icons (@agent_icon) in lock-step with the same state.
+	s.reconcileWindowIcons()
 	env := s.buildStateEnvelope()
 	if env == nil {
 		return
