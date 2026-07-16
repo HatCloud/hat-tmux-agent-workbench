@@ -109,6 +109,7 @@ Ctrl-;
 | `prefix [` | 弹窗从 z 目录历史选目录（关键字过滤，可输新路径）后新建 agent window |
 | `prefix w` | 打开 window 列表导航（全 session，Go TUI，支持折叠/搜索） |
 | `prefix W` | tmux 内置 choose-tree（备用） |
+| `prefix u` | 抓屏提取 URL 弹 fzf 选择：Enter 用默认浏览器打开、Ctrl-y 复制、Esc 取消（覆盖可见区 + 200 行回滚，最近的排最前）。鼠标党：Ghostty 下按住 `Shift+Cmd` 悬停 URL 会显示下划线、点击直接打开——tmux `mouse on` 拦截了普通点击，加 Shift 是让终端接管的通用惯例（iTerm2 则 `Cmd+Click` 即可） |
 | `prefix t` | 打开本 window 定时任务面板（独立弹窗：同屏三栏 This Window/Other Windows/History，`Tab` 切焦点 / `Ctrl+P` 从 snippet 取） |
 | `prefix T` | 打开 agent palette 并进入 Todo 视图（窗口/全局 todos） |
 | `prefix s` | 存档当前 workspace 骨架快照 |
