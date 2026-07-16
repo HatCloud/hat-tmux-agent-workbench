@@ -11,7 +11,7 @@ import (
 )
 
 func TestStatusTag(t *testing.T) {
-	cases := map[string]string{"busy": "[B] ", "shell": "[B] ", "idle": "[I] ", "error": "[E] ", "BUSY": "[B] ", "": "", "weird": ""}
+	cases := map[string]string{"busy": "[B] ", "shell": "[I] ", "idle": "[I] ", "error": "[E] ", "BUSY": "[B] ", "": "", "weird": ""}
 	for in, want := range cases {
 		if got := statusTag(in); got != want {
 			t.Fatalf("statusTag(%q) = %q, want %q", in, got, want)
@@ -147,7 +147,7 @@ func TestReconcileActions(t *testing.T) {
 		want           []reconcileAction
 	}{
 		// shell：活动态。in_progress 时发 mark_asking{false} 清 pending；否则 no-op（不凭空 start_task）。
-		{"shell", "in_progress", []reconcileAction{{command: "mark_asking", asking: false}}},
+		{"shell", "in_progress", []reconcileAction{{command: "finish_task"}}}, // shell=turn 已结束，按 idle 走完成流程
 		{"shell", "", nil},
 		// idle：in_progress 才 finish_task（走 daemon 宽限）；否则 no-op。
 		{"idle", "in_progress", []reconcileAction{{command: "finish_task"}}},

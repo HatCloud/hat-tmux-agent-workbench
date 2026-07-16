@@ -252,14 +252,15 @@ func reconcileActions(metaStatus, daemonStatus string) []reconcileAction {
 			return []reconcileAction{{command: "start_task"}, {command: "mark_asking", asking: true, attention: metaStatus}}
 		}
 		return []reconcileAction{{command: "mark_asking", asking: true, attention: metaStatus}}
-	case "idle":
+	case "idle", "shell":
+		// "shell" = turn ended, background job still running. The agent accepts
+		// input, and nothing in the session file distinguishes a productive
+		// background job from a parked long-runner (dev server/watch), so it is
+		// deliberately treated as idle: the window shows [I] and the completion
+		// 🔔 fires — the user can always tell the turn has stopped. The 2s
+		// completion grace still absorbs fast background blips.
 		if inProgress {
 			return []reconcileAction{{command: "finish_task"}}
-		}
-		return nil
-	case "shell":
-		if inProgress {
-			return []reconcileAction{{command: "mark_asking", asking: false}}
 		}
 		return nil
 	default:
@@ -271,8 +272,6 @@ func reconcileActions(metaStatus, daemonStatus string) []reconcileAction {
 // status so the status bar's 🔔 (completed-unread) reflects "finished while you
 // were away". busy → ensure a task exists (in_progress); busy→idle → finish it
 // (completed → 🔔 until focus acknowledges, with a grace debounce in the daemon).
-// "shell" (turn ended but background work pending) is treated as still-active so
-// a transient idle around the turn boundary doesn't raise a premature completion.
 func reconcileTask(sessionID, windowID, pane string, meta claudeSessionMeta, daemonStatus string) {
 	reconcileTaskStatus(sessionID, windowID, pane, meta.Name, meta.Status, daemonStatus)
 }

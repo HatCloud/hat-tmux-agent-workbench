@@ -382,8 +382,7 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 
 	// Stamp last-busy timestamp every tick the agent is actively working so
 	// window nav can display "idle since" even after the panel is reopened.
-	// "shell" (background work after the turn) counts as active here too.
-	if s := strings.ToLower(strings.TrimSpace(liveStatus)); s == "busy" || s == "shell" {
+	if s := strings.ToLower(strings.TrimSpace(liveStatus)); s == "busy" {
 		setWindowOption(windowID, "@agent_last_busy_at",
 			strconv.FormatInt(time.Now().Unix(), 10))
 	}

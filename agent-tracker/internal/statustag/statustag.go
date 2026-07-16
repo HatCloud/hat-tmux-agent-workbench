@@ -24,13 +24,16 @@ var table = []entry{
 }
 
 // ForStatus returns the display tag for a live status, folding aliases:
-// "shell" (turn ended, background work still running) renders as busy;
-// "waiting"/"paused" render as asking. Empty for unknown/idle-less states.
+// "shell" (turn ended, background work still running) renders as idle — the
+// agent accepts input in that state, and a long-lived background job (dev
+// server, watch) would otherwise pin [B] forever with no way to tell it apart
+// from real work (the session file carries no per-task signal to discriminate);
+// "waiting"/"paused" render as asking. Empty for unknown states.
 func ForStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "busy", "shell":
+	case "busy":
 		return "[B] "
-	case "idle":
+	case "idle", "shell":
 		return "[I] "
 	case "asking", "waiting", "paused":
 		return "[?] "

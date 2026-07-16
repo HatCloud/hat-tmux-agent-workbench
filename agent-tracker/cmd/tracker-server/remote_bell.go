@@ -51,9 +51,9 @@ func remoteStatusRank(status string) int {
 		return 3
 	case "limited":
 		return 2
-	case "busy", "shell":
+	case "busy":
 		return 1
-	default: // idle / ""
+	default: // idle / shell / ""
 		return 0
 	}
 }
@@ -65,7 +65,7 @@ func remoteStatusCanon(status string) string {
 	case "waiting", "paused":
 		return "asking"
 	case "shell":
-		return "busy"
+		return "idle"
 	default:
 		return status
 	}

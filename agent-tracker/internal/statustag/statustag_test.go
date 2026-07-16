@@ -4,7 +4,7 @@ import "testing"
 
 func TestForStatus(t *testing.T) {
 	cases := map[string]string{
-		"busy": "[B] ", "shell": "[B] ", "BUSY ": "[B] ",
+		"busy": "[B] ", "shell": "[I] ", "BUSY ": "[B] ",
 		"idle":   "[I] ",
 		"asking": "[?] ", "waiting": "[?] ", "paused": "[?] ",
 		"limited": "[L] ",

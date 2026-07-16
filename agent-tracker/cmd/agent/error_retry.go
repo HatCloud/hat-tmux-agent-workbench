@@ -330,7 +330,10 @@ func sendClaudeRetry(aiPane string) {
 	_ = pasteAndSubmit(aiPane, claudeRetryMessage, true)
 }
 
+// isBusyStatus reports a turn in progress. "shell" is NOT busy: the turn has
+// ended (input is accepted), so injecting a retry there is equivalent to the
+// user typing — and treating it as busy would block retries forever under a
+// long-lived background job.
 func isBusyStatus(status string) bool {
-	s := strings.ToLower(strings.TrimSpace(status))
-	return s == "busy" || s == "shell"
+	return strings.ToLower(strings.TrimSpace(status)) == "busy"
 }
