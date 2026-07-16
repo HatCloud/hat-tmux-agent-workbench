@@ -739,6 +739,11 @@ func tmuxWindowOption(windowID, opt string) string {
 	if strings.TrimSpace(windowID) == "" {
 		return ""
 	}
+	// During a sync-names pass the memo answers from one batched read per window
+	// (see window_opts.go); outside a pass this is a no-op.
+	if v, ok := memoWindowOption(windowID, opt); ok {
+		return strings.TrimSpace(v)
+	}
 	// show-options -v exits non-zero when the option is unset; treat as empty.
 	out, err := runTmuxOutput(tmuxWindowOptionArgs(windowID, opt)...)
 	if err != nil {

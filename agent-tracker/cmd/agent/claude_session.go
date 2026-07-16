@@ -839,7 +839,7 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 		// the status bar read the correct value.
 		provider := providerForPID(claudePID, idx.providers)
 		if provider != "" && tmuxWindowOption(windowID, "@agent_provider") != provider {
-			_ = runTmux("set", "-w", "-t", windowID, "@agent_provider", provider)
+			setWindowOption(windowID, "@agent_provider", provider)
 		}
 		// Fallback: read ANTHROPIC_MODEL from provider env file (e.g. minimax).
 		if model == "" {
@@ -847,10 +847,10 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 		}
 		// Persist raw model name so Window Nav and other consumers can read it.
 		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
-			_ = runTmux("set", "-w", "-t", windowID, "@agent_model", model)
+			setWindowOption(windowID, "@agent_model", model)
 		}
 		if tmuxWindowOption(windowID, "@agent_client") == "" {
-			_ = runTmux("set", "-w", "-t", windowID, "@agent_client", "claude")
+			setWindowOption(windowID, "@agent_client", "claude")
 		}
 		// Use AI-generated title as default name when user hasn't set one.
 		if meta.Name == "" && aiTitle != "" {
@@ -867,7 +867,7 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 				liveStatus = "limited"
 				stamp := strconv.FormatInt(resetAt.Unix(), 10)
 				if tmuxWindowOption(windowID, "@agent_limit_reset_at") != stamp {
-					_ = runTmux("set", "-w", "-t", windowID, "@agent_limit_reset_at", stamp)
+					setWindowOption(windowID, "@agent_limit_reset_at", stamp)
 				}
 			} else if tmuxWindowOption(windowID, "@agent_limit_reset_at") != "" {
 				_ = runTmux("set", "-wu", "-t", windowID, "@agent_limit_reset_at")
@@ -885,7 +885,7 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 				if terr.Retryable() {
 					setWindowTimeOption(windowID, optErrorAt, terr.At)
 					if terr.Type != "" && tmuxWindowOption(windowID, optErrorType) != terr.Type {
-						_ = runTmux("set", "-w", "-t", windowID, optErrorType, terr.Type)
+						setWindowOption(windowID, optErrorType, terr.Type)
 					}
 				} else {
 					unsetWindowOption(windowID, optErrorAt)
@@ -907,10 +907,10 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 		liveTitle = codexMeta.Title
 		liveStatus = codexMeta.Status
 		if tmuxWindowOption(windowID, "@agent_client") == "" {
-			_ = runTmux("set", "-w", "-t", windowID, "@agent_client", "codex")
+			setWindowOption(windowID, "@agent_client", "codex")
 		}
 		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
-			_ = runTmux("set", "-w", "-t", windowID, "@agent_model", model)
+			setWindowOption(windowID, "@agent_model", model)
 		}
 		// A codex thread whose latest rate_limits snapshot shows an exhausted
 		// window is its own "limited" status ([L]), mirroring the Claude 429
@@ -921,7 +921,7 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 				liveStatus = "limited"
 				stamp := strconv.FormatInt(resetAt.Unix(), 10)
 				if tmuxWindowOption(windowID, "@agent_limit_reset_at") != stamp {
-					_ = runTmux("set", "-w", "-t", windowID, "@agent_limit_reset_at", stamp)
+					setWindowOption(windowID, "@agent_limit_reset_at", stamp)
 				}
 			} else if tmuxWindowOption(windowID, "@agent_limit_reset_at") != "" {
 				_ = runTmux("set", "-wu", "-t", windowID, "@agent_limit_reset_at")
@@ -1033,14 +1033,14 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 	// daemon reads @agent_notify_name when building notification titles.
 	if notify := assemble(false, true, true); notify != "" &&
 		tmuxWindowOption(windowID, "@agent_notify_name") != notify {
-		_ = runTmux("set", "-w", "-t", windowID, "@agent_notify_name", notify)
+		setWindowOption(windowID, "@agent_notify_name", notify)
 	}
 
 	// Stamp last-busy timestamp every tick the agent is actively working so
 	// window nav can display "idle since" even after the panel is reopened.
 	// "shell" (background work after the turn) counts as active here too.
 	if s := strings.ToLower(strings.TrimSpace(liveStatus)); s == "busy" || s == "shell" {
-		_ = runTmux("set", "-w", "-t", windowID, "@agent_last_busy_at",
+		setWindowOption(windowID, "@agent_last_busy_at",
 			strconv.FormatInt(time.Now().Unix(), 10))
 	}
 
@@ -1232,6 +1232,10 @@ func runTmuxSyncNames(args []string) error {
 	_ = markSyncNamesStarted(syncNamesLastStartPath(), now)
 	deadline := now.Add(syncNamesMaxRun)
 
+	// One batched option read per window for this pass (see window_opts.go).
+	beginWindowOptMemo()
+	defer endWindowOptMemo()
+
 	out, err := runTmuxOutput("list-windows", "-a", "-F", "#{session_id}::#{window_id}")
 	if err != nil {
 		return nil
@@ -1291,14 +1295,14 @@ func runTmuxSyncNames(args []string) error {
 					}
 					if dir := abbrevPath(target); dir != "" &&
 						tmuxWindowOption(windowID, "@agent_dir") != dir {
-						_ = runTmux("set", "-w", "-t", windowID, "@agent_dir", dir)
+						setWindowOption(windowID, "@agent_dir", dir)
 					}
 				}
 			}
 			if meta, _, ok := ci.sessionForPanePID(panePID(aiPane)); ok {
 				// Persist session title so Window Nav can display it without re-parsing.
 				if meta.Name != "" {
-					_ = runTmux("set", "-w", "-t", windowID, "@agent_title", agentTitleForWindow(meta.Name))
+					setWindowOption(windowID, "@agent_title", agentTitleForWindow(meta.Name))
 				}
 				// Reuse the limited probe agentWindowName stamped above so the
 				// daemon sees "limited" (asking-like) instead of idle→completed.
@@ -1312,7 +1316,7 @@ func runTmuxSyncNames(args []string) error {
 				reconcileClaudeErrorRetry(windowID, aiPane, meta)
 			} else if meta, _, ok := codexThreadForPane(aiPane, &ci); ok {
 				if meta.Title != "" {
-					_ = runTmux("set", "-w", "-t", windowID, "@agent_title", meta.Title)
+					setWindowOption(windowID, "@agent_title", meta.Title)
 				}
 				// Reuse the limited probe agentWindowName stamped above so the
 				// daemon sees "limited" (asking-like) instead of idle→completed.
@@ -1795,9 +1799,9 @@ func reconcileSSHHost(windowID string) {
 	prev := tmuxWindowOption(windowID, "@agent_ssh_host")
 	switch {
 	case host == "" && prev != "":
-		_ = runTmux("set", "-w", "-u", "-t", windowID, "@agent_ssh_host")
+		unsetWindowOption(windowID, "@agent_ssh_host")
 	case host != "" && host != prev:
-		_ = runTmux("set", "-w", "-t", windowID, "@agent_ssh_host", host)
+		setWindowOption(windowID, "@agent_ssh_host", host)
 	}
 }
 
@@ -1813,10 +1817,10 @@ func reconcileSSHPaneBorder(windowID string) {
 	switch {
 	case soloSSH && !tracked:
 		_ = runTmux("setw", "-t", windowID, "pane-border-status", "off")
-		_ = runTmux("set", "-w", "-t", windowID, "@agent_ssh_border_off", "1")
+		setWindowOption(windowID, "@agent_ssh_border_off", "1")
 	case !soloSSH && tracked:
 		_ = runTmux("setw", "-u", "-t", windowID, "pane-border-status")
-		_ = runTmux("set", "-w", "-u", "-t", windowID, "@agent_ssh_border_off")
+		unsetWindowOption(windowID, "@agent_ssh_border_off")
 	}
 }
 
@@ -1851,6 +1855,39 @@ func readSessionJSONL(meta claudeSessionMeta) (model, aiTitle string) {
 		return "", ""
 	}
 	defer f.Close()
+	// Tail-first so the per-call cost stays bounded for multi-MB sessions (the
+	// latest assistant model and the current ai-title are almost always near the
+	// end). Only when the tail has no ai-title can an older one predate the tail
+	// window — fall back to a full scan then. Callers reach this function only
+	// while the window still lacks a title, so the expensive path is short-lived.
+	const tailBytes = 256 << 10
+	start := int64(0)
+	if info, err := f.Stat(); err == nil && info.Size() > tailBytes {
+		start = info.Size() - tailBytes
+	}
+	if start > 0 {
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
+			return "", ""
+		}
+	}
+	model, aiTitle = scanSessionJSONL(f, start > 0)
+	if aiTitle == "" && start > 0 {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return model, ""
+		}
+		fullModel, fullTitle := scanSessionJSONL(f, false)
+		if model == "" {
+			model = fullModel
+		}
+		aiTitle = fullTitle
+	}
+	return model, aiTitle
+}
+
+// scanSessionJSONL folds one pass over session JSONL lines, keeping the latest
+// assistant model and ai-title. skipFirst drops the first (likely partial) line
+// when the reader starts mid-file.
+func scanSessionJSONL(r io.Reader, skipFirst bool) (model, aiTitle string) {
 	var entry struct {
 		Type    string `json:"type"`
 		AITitle string `json:"aiTitle"`
@@ -1858,9 +1895,16 @@ func readSessionJSONL(meta claudeSessionMeta) (model, aiTitle string) {
 			Model string `json:"model"`
 		} `json:"message"`
 	}
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	first := true
 	for scanner.Scan() {
+		if first {
+			first = false
+			if skipFirst {
+				continue
+			}
+		}
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}

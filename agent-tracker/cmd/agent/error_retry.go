@@ -274,17 +274,11 @@ func windowIntOption(windowID, opt string) int {
 }
 
 func setWindowTimeOption(windowID, opt string, t time.Time) {
-	_ = runTmux("set", "-w", "-t", windowID, opt, strconv.FormatInt(t.Unix(), 10))
+	setWindowOption(windowID, opt, strconv.FormatInt(t.Unix(), 10))
 }
 
 func setWindowIntOption(windowID, opt string, n int) {
-	_ = runTmux("set", "-w", "-t", windowID, opt, strconv.Itoa(n))
-}
-
-func unsetWindowOption(windowID, opt string) {
-	if strings.TrimSpace(tmuxWindowOption(windowID, opt)) != "" {
-		_ = runTmux("set", "-wu", "-t", windowID, opt)
-	}
+	setWindowOption(windowID, opt, strconv.Itoa(n))
 }
 
 // clearRetryState drops the per-episode counters (kept the error stamps out —
