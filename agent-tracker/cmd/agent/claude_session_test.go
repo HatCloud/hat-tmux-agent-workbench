@@ -473,6 +473,8 @@ func TestCommandLooksLikeCodex(t *testing.T) {
 		{"node /Users/me/.nvm/bin/codex", true},
 		{"/path/to/codex app-server", false},
 		{"node /path/to/codex app-server", false},
+		{"/opt/homebrew/bin/codex exec --json do stuff", false}, // headless worker，不驱动窗口
+		{"/opt/homebrew/bin/codex resume abc", true},
 		{"claude", false},
 	}
 	for _, c := range cases {

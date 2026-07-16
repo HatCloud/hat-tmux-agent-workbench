@@ -36,6 +36,22 @@ type claudeSessionMeta struct {
 	Status    string `json:"status"`
 	SessionID string `json:"sessionId"`
 	CWD       string `json:"cwd"`
+	// Entrypoint distinguishes the interactive TUI ("cli") from headless runs
+	// ("sdk-cli" for `claude -p`); kind is "interactive" for BOTH, so this is
+	// the only usable discriminator.
+	Entrypoint string `json:"entrypoint"`
+}
+
+// isWindowAgentSession reports whether a session should drive window features
+// (naming, status prefix, task tracking, auto-retry). Only the interactive TUI
+// qualifies: headless `claude -p` children (e.g. agent-hl workers spawned under
+// a pane) also write session files, and matching them via the pane process tree
+// used to hijack the window's state — worst case the auto-retry engine pasted
+// "Continue where you left off." into a pane that was running a headless
+// worker. Empty entrypoint is accepted for older Claude versions that predate
+// the field.
+func isWindowAgentSession(meta claudeSessionMeta) bool {
+	return meta.Entrypoint == "" || meta.Entrypoint == "cli"
 }
 
 // claudeIndex is a one-shot snapshot of the process tree, the Claude session
@@ -105,6 +121,9 @@ func buildClaudeIndex() claudeIndex {
 				continue
 			}
 			meta.Name = strings.TrimSpace(meta.Name)
+			if !isWindowAgentSession(meta) {
+				continue // headless (sdk-cli) sessions must not drive window state
+			}
 			ci.byPID[pid] = meta
 		}
 	}

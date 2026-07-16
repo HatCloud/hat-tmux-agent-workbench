@@ -361,10 +361,16 @@ func commandLooksLikeCodex(command string) bool {
 		return false
 	}
 	fields := strings.Fields(command)
-	for _, f := range fields {
-		if filepath.Base(f) == "codex" {
-			return true
+	for i, f := range fields {
+		if filepath.Base(f) != "codex" {
+			continue
 		}
+		// Headless `codex exec` runs (agent-hl workers etc.) must not drive
+		// window naming/status — mirrors the Claude sdk-cli entrypoint filter.
+		if i+1 < len(fields) && fields[i+1] == "exec" {
+			return false
+		}
+		return true
 	}
 	return false
 }

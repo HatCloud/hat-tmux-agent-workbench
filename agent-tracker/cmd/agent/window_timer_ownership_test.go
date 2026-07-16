@@ -112,3 +112,18 @@ func TestComputeNextLoopIntervalReanchorsAfterDowntime(t *testing.T) {
 		t.Fatalf("停机后 next=%v, want %v（不应留在过去）", got, want)
 	}
 }
+
+// headless（claude -p，entrypoint=sdk-cli）会话不得驱动窗口特性——曾被 pane
+// 进程树匹配后劫持窗口状态，auto-retry 甚至把续跑消息注进 headless worker 的
+// pane。kind 对两者都是 interactive，entrypoint 是唯一判据；空值兼容旧版本。
+func TestIsWindowAgentSession(t *testing.T) {
+	if !isWindowAgentSession(claudeSessionMeta{Entrypoint: "cli"}) {
+		t.Fatalf("交互 TUI（cli）应视为窗口 agent 会话")
+	}
+	if !isWindowAgentSession(claudeSessionMeta{}) {
+		t.Fatalf("旧版本无 entrypoint 字段应兼容")
+	}
+	if isWindowAgentSession(claudeSessionMeta{Entrypoint: "sdk-cli"}) {
+		t.Fatalf("headless sdk-cli 不应驱动窗口特性")
+	}
+}
