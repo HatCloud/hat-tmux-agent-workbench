@@ -176,10 +176,16 @@ func readSummary(path string) (title, model string) {
 }
 
 // statusFromEvents maps events.jsonl tail → busy|asking|idle|unknown.
-// Idle only after an explicit turn_ended with no subsequent busy signal
-// (turn_started / busy phase / tool activity). Residual phase text after
-// turn_ended does not keep the session busy (design: avoid false busy).
+//
+// Idle only after an explicit turn_ended with no subsequent busy signal.
+// Residual phase text after turn_ended does not keep the session busy.
 // Parse failure / empty → unknown (not idle — avoid false completion 🔔).
+//
+// Asking is ONLY the *current* unresolved permission gate:
+// every Grok tool call briefly emits permission_prompt → permission_requested
+// → permission_resolved (often wait_ms:0 auto-allow). A sticky "asking" flag
+// would leave the window on [?] for the rest of the turn — which users hit
+// when they queue a message (Enter while busy) mid-tooling.
 func statusFromEvents(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -202,10 +208,12 @@ func statusFromEvents(path string) string {
 		"streaming_text":      true,
 		"tool_execution":      true,
 	}
-	// activity after last turn_ended?
 	active := false
 	ended := false
-	asking := false
+	// pendingPermission: true only while waiting on a human/auto gate that has
+	// not yet resolved. Cleared on permission_resolved and on any post-gate
+	// busy work (tool_execution / streaming / tool_started).
+	pendingPermission := false
 	sawAny := false
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -221,37 +229,47 @@ func statusFromEvents(path string) string {
 		case "turn_started", "loop_started":
 			active = true
 			ended = false
-			asking = false
+			pendingPermission = false
 		case "turn_ended":
 			ended = true
 			active = false
-			asking = false
+			pendingPermission = false
 		case "phase_changed":
-			if e.Phase == "permission_prompt" {
-				asking = true
+			switch {
+			case e.Phase == "permission_prompt":
+				// Gate opened (may auto-resolve in the same millisecond).
+				pendingPermission = true
 				active = true
 				ended = false
-			} else if busyPhases[e.Phase] {
-				// Only count as activity if we have not just ended, or a new turn started.
-				// Residual streaming_* lines after turn_ended are ignored.
+			case busyPhases[e.Phase]:
+				// Left the permission gate for real work — not asking.
+				pendingPermission = false
 				if !ended {
 					active = true
 				}
 			}
-		case "tool_started", "first_token":
+		case "permission_requested":
+			pendingPermission = true
+			active = true
+			ended = false
+		case "permission_resolved":
+			// Auto-allow (wait_ms:0) or user click — gate closed.
+			pendingPermission = false
 			if !ended {
 				active = true
 			}
-		case "permission_requested":
-			asking = true
-			active = true
-			ended = false
+		case "tool_started", "tool_completed", "first_token":
+			pendingPermission = false
+			if !ended {
+				active = true
+			}
 		}
 	}
 	if !sawAny {
 		return agentclient.StatusUnknown
 	}
-	if asking {
+	// Only [?] when the *latest* state is still sitting on an open permission.
+	if pendingPermission {
 		return agentclient.StatusAsking
 	}
 	if active {

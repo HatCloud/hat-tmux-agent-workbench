@@ -47,11 +47,27 @@ func TestStatusFromEvents(t *testing.T) {
 	if got := statusFromEvents(path); got != agentclient.StatusIdle {
 		t.Fatalf("idle: got %s", got)
 	}
-	// asking
+	// true asking: open permission gate, not yet resolved
 	os.WriteFile(path, []byte(`{"type":"phase_changed","phase":"permission_prompt"}
+{"type":"permission_requested","tool_name":"run_terminal_command"}
 `), 0644)
 	if got := statusFromEvents(path); got != agentclient.StatusAsking {
 		t.Fatalf("asking: got %s", got)
+	}
+	// auto-allow tool cycle (wait_ms:0) must NOT stick on asking — this is the
+	// queue-while-busy false-[?] bug: every tool flashes permission_prompt.
+	os.WriteFile(path, []byte(`{"type":"turn_started"}
+{"type":"phase_changed","phase":"tool_execution"}
+{"type":"tool_started","tool_name":"read_file"}
+{"type":"phase_changed","phase":"permission_prompt"}
+{"type":"permission_requested","tool_name":"read_file"}
+{"type":"permission_resolved","tool_name":"read_file","decision":"allow","wait_ms":0}
+{"type":"phase_changed","phase":"tool_execution"}
+{"type":"tool_completed","tool_name":"read_file","duration_ms":0,"outcome":"success"}
+{"type":"phase_changed","phase":"streaming_text"}
+`), 0644)
+	if got := statusFromEvents(path); got != agentclient.StatusBusy {
+		t.Fatalf("post auto-allow tool cycle should be busy, got %s", got)
 	}
 	// missing file
 	if got := statusFromEvents(filepath.Join(dir, "nope.jsonl")); got != agentclient.StatusUnknown {
