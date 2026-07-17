@@ -534,6 +534,7 @@ python3 ~/.hat-config/scripts/agent_tracker.py ack
 - **New agent prompt**（默认 ON）：ON 时 `prefix ]` 先用 tmux 原生底部 `command-prompt`（`New agent title:`）让你输窗口标题（空 = 自动命名）再建窗；OFF 时直接建窗（旧行为）。`prefix [`（目录选择）不受影响。标题会写进 `@agent_title`、走 date-strip + 自动命名拼成 `[status] 项目/标题 (model)`。含空格的标题整体保留（单引号单参数传给 `new_agent_window.sh`）。
 - **Strip date prefix**（默认 ON）：从窗口名/标题段剥掉前导 `YYYY-MM-DD-`，例如 `2026-07-09-open-source-refactor` 在 tmux 状态栏、通知标题、Window Nav 的 Name 列都显示为 `open-source-refactor`。OFF 时保留日期。
 - **Window nav size**（默认 `wide`）：`prefix w` 窗口导航弹窗宽度档位——`standard`（紧凑，~140 cap）/ `wide`（默认，~180 cap，够宽让底部提示行单行显示、Name 列留足宽度）/ `full`（~96% client 宽）。
+- **URL picker folders**（默认 OFF）：`prefix u` 抓屏结果里是否包含文件夹条目。默认关——裸词目录误报多（prompt/命令行里的 `tmux`、`scripts` 这类 token 都是真实存在的目录），且按「最近在前」排序时它们常占据列表头部；只在确实需要用 VS Code/Finder 打开目录时再开。文件/URL 条目不受影响。
 
 > **未来可配置（backlog，暂未实现，仅记录）**：completion grace window（busy→idle 完成去抖，现固定 2s）、remote-bell interval（现固定 3s）、workspace-save interval、window-title 最大长度、auto-rename 总开关、通知声音。
 

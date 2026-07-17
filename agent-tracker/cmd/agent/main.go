@@ -39,6 +39,9 @@ type appConfig struct {
 	StripDatePrefix *bool `json:"strip_date_prefix,omitempty"`
 	// WindowNavSize: prefix w 弹窗宽度档位（standard/wide/full，空=wide）。
 	WindowNavSize string `json:"window_nav_size,omitempty"`
+	// URLPickerDirs: prefix u 列表是否包含文件夹条目（默认 false——裸词目录
+	// 误报多、prompt/命令行 token 常把文件夹顶到列表头部，保守起见默认关）。
+	URLPickerDirs *bool `json:"url_picker_dirs,omitempty"`
 	// AutoRetry: agent 撞上可恢复错误（5xx/529 overloaded）停摆时，是否自动 send-keys
 	// 续跑消息重试（默认 false——会往会话注入一条消息，保守起见默认关）。
 	AutoRetry *bool `json:"auto_retry,omitempty"`
@@ -148,6 +151,12 @@ func newAgentPromptSetting(cfg appConfig) bool {
 // the window name/title segment. Defaults to true.
 func stripDatePrefixSetting(cfg appConfig) bool {
 	return derefBool(cfg.StripDatePrefix, true)
+}
+
+// urlPickerDirsSetting reports whether the prefix-u picker lists directory
+// entries. Defaults to false (bare-word dir matches are noisy).
+func urlPickerDirsSetting(cfg appConfig) bool {
+	return derefBool(cfg.URLPickerDirs, false)
 }
 
 // windowNavSizeSetting returns the prefix-w popup width tier, defaulting to "wide".
@@ -298,6 +307,17 @@ func toggleStripDatePrefix() error {
 			cfg.StripDatePrefix = boolPtr(false)
 		} else {
 			cfg.StripDatePrefix = nil // default true → keep config clean
+		}
+	})
+}
+
+// toggleURLPickerDirs flips directory entries in the prefix-u picker and persists it.
+func toggleURLPickerDirs() error {
+	return updateAppConfig(func(cfg *appConfig) {
+		if urlPickerDirsSetting(*cfg) {
+			cfg.URLPickerDirs = nil // default false → keep config clean
+		} else {
+			cfg.URLPickerDirs = boolPtr(true)
 		}
 	})
 }
@@ -486,7 +506,7 @@ func run(args []string) error {
 
 func runTmuxCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|status-position|new-agent-prompt|window-nav-size>")
+		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|status-position|new-agent-prompt|window-nav-size|url-picker-dirs>")
 	}
 	switch args[0] {
 	case "on-focus":
@@ -512,6 +532,13 @@ func runTmuxCommand(args []string) error {
 		return nil
 	case "window-nav-size":
 		fmt.Println(windowNavSizeSetting(loadAppConfig()))
+		return nil
+	case "url-picker-dirs":
+		if urlPickerDirsSetting(loadAppConfig()) {
+			fmt.Println("on")
+		} else {
+			fmt.Println("off")
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown tmux subcommand: %s", args[0])

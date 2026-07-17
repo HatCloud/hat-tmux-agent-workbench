@@ -30,6 +30,7 @@ const (
 	generalOptionNewAgentPrompt = "new_agent_prompt"
 	generalOptionStripDate      = "strip_date_prefix"
 	generalOptionWindowNavSize  = "window_nav_size"
+	generalOptionURLPickerDirs  = "url_picker_dirs"
 	generalOptionAutoRetry      = "auto_retry"
 	generalOptionAutoRetryMax   = "auto_retry_max"
 )
@@ -136,6 +137,12 @@ func (m *generalPanelModel) reload() {
 			Subtitle: "Width of the `prefix w` window navigator popup",
 			Value:    windowNavSizeSetting(cfg),
 			Values:   []string{"standard", "wide", "full"},
+		},
+		{
+			Key:      generalOptionURLPickerDirs,
+			Title:    "URL picker folders",
+			Subtitle: "Include existing directories in `prefix u` results",
+			Enabled:  urlPickerDirsSetting(cfg),
 		},
 		{
 			Key:      generalOptionAutoRetry,
@@ -377,6 +384,11 @@ func (m *generalPanelModel) toggleSelected() {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
 			return
 		}
+	case generalOptionURLPickerDirs:
+		if err := toggleURLPickerDirs(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
 	case generalOptionAutoRetry:
 		if err := toggleAutoRetry(); err != nil {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
@@ -523,6 +535,12 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 				stateText = "`prefix w` popup fills almost the whole client"
 			default:
 				stateText = "`prefix w` popup is wide (fits the footer on one line)"
+			}
+		case entry.Key == generalOptionURLPickerDirs:
+			if entry.Enabled {
+				stateText = "`prefix u` lists folders alongside URLs and files"
+			} else {
+				stateText = "`prefix u` lists URLs and files only (no folders)"
 			}
 		case entry.Key == generalOptionAutoRetry:
 			if entry.Enabled {

@@ -59,6 +59,16 @@ func TestNewAgentPromptSetting(t *testing.T) {
 	}
 }
 
+func TestURLPickerDirsSetting(t *testing.T) {
+	if urlPickerDirsSetting(appConfig{}) {
+		t.Error("urlPickerDirsSetting default should be false")
+	}
+	tr := true
+	if !urlPickerDirsSetting(appConfig{URLPickerDirs: &tr}) {
+		t.Error("urlPickerDirsSetting with true ptr should be true")
+	}
+}
+
 func TestWindowNavSizeSetting(t *testing.T) {
 	cases := map[string]string{
 		"":         "wide", // default

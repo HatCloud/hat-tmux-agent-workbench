@@ -109,7 +109,7 @@ Ctrl-;
 | `prefix [` | 弹窗从 z 目录历史选目录（关键字过滤，可输新路径）后新建 agent window |
 | `prefix w` | 打开 window 列表导航（全 session，Go TUI，支持折叠/搜索） |
 | `prefix W` | tmux 内置 choose-tree（备用） |
-| `prefix u` | 抓屏提取 URL 弹 fzf 选择：Enter 用默认浏览器打开、Ctrl-y 复制、Esc 取消（覆盖可见区 + 200 行回滚，最近的排最前）。鼠标党：Ghostty 下按住 `Shift+Cmd` 悬停 URL 会显示下划线、点击直接打开——tmux `mouse on` 拦截了普通点击，加 Shift 是让终端接管的通用惯例（iTerm2 则 `Cmd+Click` 即可） |
+| `prefix u` | 抓屏提取 URL / 文件 / 文件夹弹 fzf 选择：Enter 默认打开（URL→浏览器、文件→VS Code 支持 `file:line:col` 跳行、文件夹→VS Code）、Ctrl-o 其他方式（文件→系统 `open`、文件夹→Finder）、Ctrl-y 复制、Esc 取消。覆盖可见区 + 200 行回滚，最近的排最前；pane 目录之下的内容显示相对路径（之外显示绝对全称），相对路径按 pane 当前目录解析、只列磁盘上真实存在的（`/dev/null` 这类噪声排除）；文件夹条目默认不列（Settings → General → URL picker folders 可开）；pane 目录下的文件用 VS Code 打开时以该目录为工作区（「在项目中打开」，不是以文件父目录单开）。鼠标党：Ghostty 下按住 `Shift+Cmd` 悬停 URL 会显示下划线、点击直接打开——tmux `mouse on` 拦截了普通点击，加 Shift 是让终端接管的通用惯例（iTerm2 则 `Cmd+Click` 即可） |
 | `prefix t` | 打开本 window 定时任务面板（独立弹窗：同屏三栏 This Window/Other Windows/History，`Tab` 切焦点 / `Ctrl+P` 从 snippet 取） |
 | `prefix T` | 打开 agent palette 并进入 Todo 视图（窗口/全局 todos） |
 | `prefix s` | 存档当前 workspace 骨架快照 |
@@ -459,7 +459,7 @@ Alt-u      向上半页
 Alt-d      向下半页
 ```
 
-在 macOS 上，`Option-u` 可能是 dead key，`Option-d` 可能输入 `∂`。如果 Alt/Option 版本不稳定，先 `prefix v` 进 copy-mode，再用 `Ctrl-u`/`Ctrl-d` 翻半页。（注意：`prefix d` 是 detach-client、`prefix u` 未绑定，不要用来滚动。）
+在 macOS 上，`Option-u` 可能是 dead key，`Option-d` 可能输入 `∂`。如果 Alt/Option 版本不稳定，先 `prefix v` 进 copy-mode，再用 `Ctrl-u`/`Ctrl-d` 翻半页。（注意：`prefix d` 是 detach-client、`prefix u` 是抓屏提取 URL/文件，不要用来滚动。）
 
 在 pane 之间移动：
 
