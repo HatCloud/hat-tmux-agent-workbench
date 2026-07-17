@@ -40,6 +40,7 @@ type activeEntry struct {
 }
 
 // CommandLooksLikeGrokInteractive excludes headless -p / agent.
+// Matches `grok` and platform binaries like `grok-macos-aarc` (pane_current_command).
 func CommandLooksLikeGrokInteractive(command string) bool {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -48,10 +49,11 @@ func CommandLooksLikeGrokInteractive(command string) bool {
 	fields := strings.Fields(command)
 	for i, f := range fields {
 		base := filepath.Base(f)
-		if base != "grok" {
+		// "grok", "grok-macos-aarc", "grok-linux-x64", …
+		if base != "grok" && !strings.HasPrefix(base, "grok-") {
 			continue
 		}
-		// headless single-turn
+		// headless single-turn / agent subcommand after the binary token
 		for j := i + 1; j < len(fields); j++ {
 			if fields[j] == "-p" || fields[j] == "--single" || fields[j] == "--prompt-file" || fields[j] == "--prompt-json" {
 				return false

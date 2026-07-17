@@ -181,7 +181,9 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex, acIdx 
 		if regLive.Model != "" {
 			model = sanitizeWindowMarker(regLive.Model)
 		}
-		if tmuxWindowOption(windowID, "@agent_client") == "" && client != "" {
+		// Always refresh structural client from live Detect so a stale launcher
+		// tag (e.g. codex) cannot outlive a Grok process and mislabel Window Nav.
+		if client != "" && tmuxWindowOption(windowID, "@agent_client") != client {
 			setWindowOption(windowID, "@agent_client", client)
 		}
 		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {

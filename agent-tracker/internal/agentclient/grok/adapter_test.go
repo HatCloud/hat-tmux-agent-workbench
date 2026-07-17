@@ -15,6 +15,8 @@ func TestCommandLooksLikeGrokInteractive(t *testing.T) {
 	}{
 		{"grok", true},
 		{"/usr/local/bin/grok", true},
+		{"grok-macos-aarc", true},
+		{"/opt/bin/grok-macos-aarc --cwd /tmp", true},
 		{"grok -p hello", false},
 		{"grok --single hi", false},
 		{"grok agent do stuff", false},
