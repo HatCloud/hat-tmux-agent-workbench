@@ -41,8 +41,11 @@ build_options() {
     p="$(basename "$env" .env)"
     printf 'Claude Code · %s\n' "$p"
   done
-  # Codex is a real CLI on PATH; only list clients that can actually launch.
+  # Codex / Grok are real CLIs on PATH; only list clients that can actually launch.
   printf 'Codex\n'
+  if command -v grok >/dev/null 2>&1; then
+    printf 'Grok\n'
+  fi
 }
 
 choice="$(build_options | fzf --prompt='启动什么客户端 > ' --height=45% --reverse \
@@ -73,6 +76,7 @@ case "$choice" in
     esac
     ;;
   Codex)    agent_client="codex"; agent_provider=""; ai_cmd="codex" ;;
+  Grok)     agent_client="grok"; agent_provider=""; ai_cmd="grok" ;;
 esac
 
 agent_model=""
@@ -81,12 +85,13 @@ case "$choice" in
   *Opus*)   agent_model="opus" ;;
 esac
 
-# Pass resume through to the client: claude uses --resume, codex uses `resume`.
+# Pass resume through to the client: claude/grok use --resume, codex uses `resume`.
 # A bare flag (no value) drops into the client's interactive resume picker.
 if [[ "$resume" == "1" ]]; then
   if [[ "$agent_client" == "codex" ]]; then
     ai_cmd="$ai_cmd resume"
   else
+    # claude, grok, and other --resume clients
     ai_cmd="$ai_cmd --resume"
   fi
   [[ -n "$resume_arg" ]] && ai_cmd="$ai_cmd $resume_arg"

@@ -10,22 +10,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/fsnotify/fsnotify"
 )
 
-// Event-driven detection: Claude Code writes one <pid>.json per live session
-// under ~/.claude/sessions and rewrites it on every status change. Watching that
-// directory lets the daemon pick up a busy↔idle / asking / error transition in
-// ~ms instead of waiting for the fixed status-bar poll (3s+). The periodic poll
-// stays as a safety net; the watcher only adds immediacy and costs nothing while
-// idle (no writes → no events → no work).
+// Event-driven detection: adapters declare WatchHints (Claude: sessions dir with
+// status-field dedupe). Watching those paths lets the daemon pick up transitions
+// in ~ms instead of waiting for the fixed status-bar poll. The periodic poll
+// stays as a safety net; Grok intentionally returns no hints (poll-only).
 
-func claudeSessionsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+func watchSources() []agentclient.WatchSource {
+	var out []agentclient.WatchSource
+	seen := map[string]bool{}
+	for _, a := range agentclient.DefaultRegistry().Adapters {
+		h, ok := a.(agentclient.WatchHinter)
+		if !ok {
+			continue
+		}
+		for _, src := range h.WatchHints() {
+			if src.Path == "" || seen[src.Path] {
+				continue
+			}
+			seen[src.Path] = true
+			out = append(out, src)
+		}
 	}
-	return filepath.Join(home, ".claude", "sessions")
+	return out
 }
 
 // agentBinaryPath locates the sibling `agent` binary (next to this daemon), with
@@ -100,30 +110,36 @@ func sessionStatusOf(path string) (status string, ok bool) {
 	return meta.Status, true
 }
 
-// watchSessionFiles watches the Claude sessions dir and, on a real status
-// transition, coalesces a sync-names run. Best-effort: any setup failure logs and
-// returns, leaving the periodic poll as the fallback. Blocks — run in a goroutine.
+// watchSessionFiles watches adapter WatchHints paths and, on a real status
+// transition (Claude) or any write (generic), coalesces a sync-names run.
+// Best-effort: setup failure logs and returns; periodic poll remains fallback.
 func (s *server) watchSessionFiles() {
-	dir := claudeSessionsDir()
-	if dir == "" {
+	sources := watchSources()
+	if len(sources) == 0 {
 		return
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("session watch: mkdir %s: %v", dir, err)
-		return
-	}
+	// Map path → whether to dedupe on JSON status field.
+	dedupeByStatus := map[string]bool{}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("session watch: %v", err)
 		return
 	}
 	defer w.Close()
-	if err := w.Add(dir); err != nil {
-		log.Printf("session watch add %s: %v", dir, err)
-		return
+	for _, src := range sources {
+		if err := os.MkdirAll(src.Path, 0o755); err != nil {
+			log.Printf("session watch: mkdir %s: %v", src.Path, err)
+			continue
+		}
+		if err := w.Add(src.Path); err != nil {
+			log.Printf("session watch add %s: %v", src.Path, err)
+			continue
+		}
+		if src.StatusFieldDedupe == "status" {
+			dedupeByStatus[src.Path] = true
+		}
 	}
-	// Last-seen status per session file, so heartbeat rewrites that don't change
-	// status produce no work. Owned solely by this goroutine — no lock needed.
+	// Last-seen status per session file (Claude heartbeat dedupe).
 	lastStatus := map[string]string{}
 	for {
 		select {
@@ -131,24 +147,31 @@ func (s *server) watchSessionFiles() {
 			if !ok {
 				return
 			}
-			if !strings.HasSuffix(ev.Name, ".json") {
+			dir := filepath.Dir(ev.Name)
+			useDedupe := dedupeByStatus[dir]
+			if useDedupe && !strings.HasSuffix(ev.Name, ".json") {
 				continue
 			}
 			switch {
 			case ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0:
-				// A session ended (window likely closed) — reflect it once.
 				if _, tracked := lastStatus[ev.Name]; tracked {
 					delete(lastStatus, ev.Name)
 					s.detectCoalescer.trigger()
+				} else if !useDedupe {
+					s.detectCoalescer.trigger()
 				}
 			case ev.Op&(fsnotify.Write|fsnotify.Create) != 0:
-				st, readable := sessionStatusOf(ev.Name)
-				if !readable {
-					continue // partial write; skip, next event catches up
-				}
-				if lastStatus[ev.Name] != st {
-					lastStatus[ev.Name] = st
-					s.detectCoalescer.trigger() // real transition
+				if useDedupe {
+					st, readable := sessionStatusOf(ev.Name)
+					if !readable {
+						continue
+					}
+					if lastStatus[ev.Name] != st {
+						lastStatus[ev.Name] = st
+						s.detectCoalescer.trigger()
+					}
+				} else {
+					s.detectCoalescer.trigger()
 				}
 			}
 		case err, ok := <-w.Errors:

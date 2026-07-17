@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/ipc"
 )
 
@@ -125,6 +126,8 @@ func runTmuxSyncNames(args []string) error {
 		return nil
 	}
 	ci := buildClaudeIndex()
+	// One process Index for all adapters this pass (avoid N×ps for N windows).
+	acIdx := agentclient.BuildIndex()
 	// Daemon task status per pane, to drive the 🔔 (completed-unread) icon from
 	// the live Claude busy/idle status.
 	taskByPane := map[string]string{}
@@ -145,7 +148,7 @@ func runTmuxSyncNames(args []string) error {
 		}
 		sessionID, windowID := parts[0], parts[1]
 		aiPane := agentAIPane(windowID, &ci)
-		if name := agentWindowName(windowID, sessionID, aiPane, &ci); name != "" {
+		if name := agentWindowName(windowID, sessionID, aiPane, &ci, acIdx); name != "" {
 			autoRenameWindow(windowID, name)
 		} else if strings.TrimSpace(tmuxWindowOption(windowID, "@agent_window_name_auto")) != "" {
 			// A window we previously auto-named no longer qualifies (e.g. an ssh
@@ -210,6 +213,18 @@ func runTmuxSyncNames(args []string) error {
 					status = "limited"
 				}
 				reconcileTaskStatus(sessionID, windowID, aiPane, meta.Title, status, taskByPane[aiPane])
+			} else {
+				// Grok (and future adapters): shared Index + registry Detect.
+				tag := tmuxWindowOption(windowID, "@agent_client")
+				if live, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(aiPane), tag); ok {
+					if live.Title != "" {
+						setWindowOption(windowID, "@agent_title", agentTitleForWindow(live.Title))
+					}
+					// unknown must not finish_task (design: no false completion 🔔)
+					if live.Status != agentclient.StatusUnknown && live.Status != "" {
+						reconcileTaskStatus(sessionID, windowID, aiPane, live.Title, live.Status, taskByPane[aiPane])
+					}
+				}
 			}
 		}
 	}

@@ -108,8 +108,8 @@ rm -f "$tmp_conf"
 agent
 ```
 
-- 弹出 fzf 选客户端：`Claude Code · 默认` / 各 provider（minimax/kimi/deepseek/openrouter/temp/official）/ `Codex`。**直接回车 = 默认 Claude**；Esc 取消。
-- **恢复会话**：`agent -r`（或 `--resume`）进入客户端的交互恢复菜单；`agent -r <name|id>` 直接恢复指定会话——参数透传给选中客户端（claude `--resume`、codex `resume`）。
+- 弹出 fzf 选客户端：`Claude Code · 默认` / 各 provider（minimax/kimi/deepseek/openrouter/temp/official）/ `Codex` / `Grok`（PATH 上有 `grok` 时）。**直接回车 = 默认 Claude**；Esc 取消。
+- **恢复会话**：`agent -r`（或 `--resume`）进入客户端的交互恢复菜单；`agent -r <name|id>` 直接恢复指定会话——参数透传给选中客户端（claude/grok `--resume`、codex `resume`）。
 - 不在 tmux 内 → 新建 session 并 attach；已在 tmux 内 → 当前 session 开新 window。
 - 自动搭三 pane（ai/git/run）布局，在 ai pane 起选定客户端（如 `claude-minimax`），并把所选 client/provider 写入 window 变量 `@agent_client`/`@agent_provider`。
 - 不再需要进窗口时输名——窗口名由 agent-tracker 在聚焦时自动命名。
@@ -126,7 +126,7 @@ agent
 
 缩写规则：客户端 `claude→CL`/`codex→CO`；provider 取首字母大写（`minimax→M`）；项目名去掉开头 `YYYY-MM-DD-` 日期前缀、超过 15 字符截断加 `…`（`2026-06-18-plugin-popup-reminders → plugin-popup-re…`）。状态栏 tab 前缀 `#I:` 是 tmux 窗口编号，可据此跳转。
 
-命名锚点是**当前窗口主 AI pane 那个 Claude/Codex 会话的标题**。Claude 读 `~/.claude/sessions/<pid>.json` 的 `name`，Codex 读 `~/.codex/state_5.sqlite` 中最新 CLI thread 的 `title`。自动获取到的标题会按显示宽度截断到约 10 个汉字 / 20 个英文字母，避免 tab 和 Window Nav 过长；在 Claude 里给会话改名后，底部窗口名**自动同步**：
+命名锚点是**当前窗口主 AI pane 那个 agent 会话的标题**。Claude 读 `~/.claude/sessions/<pid>.json` 的 `name`，Codex 读 `~/.codex/state_5.sqlite` 中最新 CLI thread 的 `title`，Grok 读 `~/.grok` 的 `summary.json`（经 `internal/agentclient`）。自动获取到的标题会按显示宽度截断到约 10 个汉字 / 20 个英文字母，避免 tab 和 Window Nav 过长；在 Claude 里给会话改名后，底部窗口名**自动同步**：
 - **切窗 / 切 session / 聚焦**时即时重算（`after-select-window`/`client-session-changed`/`pane-focus-in` hook 触发全量 `sync-names`，含 client/provider 变化）。
 - **停留不动时**状态栏每秒发轻量触发，完整 `sync-names` 内部限流为最多每 5 秒一次；切窗/聚焦仍即时触发。重叠触发会自动合并，始终只运行一个 worker。
 

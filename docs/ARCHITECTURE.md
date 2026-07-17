@@ -6,7 +6,7 @@
 ## 三层架构
 
 ```
-┌─ Claude Code ──────────────┐   上报：sessions-json 轮询（+ Stop hook 抓 session id）
+┌─ Claude / Codex / Grok ────┐   上报：各 client 状态文件轮询（Claude sessions-json + Stop hook）
 │  tracker-mcp (MCP server)  │ ──────────────┐
 │  claude_report.sh (hook)   │               │  Unix socket
 └────────────────────────────┘               ▼
@@ -19,6 +19,26 @@
    status bar（session tabs + ⏳/🔔 图标）、pane-focus-in/after-select-window
    调 `agent tmux on-focus`（拼窗口名）+ `agent tracker command acknowledge`
 ```
+
+## Agent Adapter（`internal/agentclient`）
+
+第三种及以后 client 经 **Adapter 注册表** 接入，消费方（窗名 / sync-names / workspace resume）优先读归一的 `LiveSession`。
+
+| 单元 | 路径 | 职责 |
+|------|------|------|
+| 契约 | `internal/agentclient/` | `Adapter`、`LiveSession`、`Index`、`Registry.DetectForPane` |
+| Claude | `internal/agentclient/claude` | `~/.claude/sessions`；WatchHints；Retry on |
+| Codex | `internal/agentclient/codex` | 进程 + rollout/SQLite；Retry off |
+| Grok | `internal/agentclient/grok` | `active_sessions.json` + summary + events；poll-only；Retry off |
+| 注册 | `cmd/agent/agentclient_init.go` | `init()` 调各 `Register()` |
+
+**探测优先级**：`@agent_client` 且 Detect 严格成功 → 采用；否则 **claude > codex > grok**。未知 tag 忽略。
+
+**Grok 状态**：events 尾映射 busy/asking/idle；解析失败 → `unknown`（**不**驱动 finish_task，避免假完成 🔔）。Headless：`grok -p` / `grok agent` 过滤。
+
+**扩展第四 client**：实现 `Adapter` + `Register()` + launcher 一行 + 文档。`window_naming` 对「无 Claude/Codex 命中」走 Registry 通用分支（Grok 已走此路）。
+
+**Known debt（partial cutover）**：Claude/Codex limited/error/provider 富化仍在 `cmd/agent` legacy 路径；S4「消费方零 client 字面分叉」未完全关闭。Grok **无** `reset` quota timer 信号源（`quotaResetFireAt` 仅 Claude/Codex）。
 
 三个 Go 二进制（`agent-tracker/cmd/`）：
 

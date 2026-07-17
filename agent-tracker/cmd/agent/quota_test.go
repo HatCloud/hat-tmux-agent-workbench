@@ -240,22 +240,20 @@ func TestScreenShowsUsageLimit(t *testing.T) {
 }
 
 // TestShouldDismissUsageDialog covers the only safety gate for timer firing:
-// Escape only when neither client is busy AND the quota box is on screen.
+// Escape only when no live agent is busy AND the quota box is on screen.
 func TestShouldDismissUsageDialog(t *testing.T) {
 	cases := []struct {
-		name                                     string
-		claudeBusy, codexBusy, screenMatch, want bool
+		name                       string
+		anyBusy, screenMatch, want bool
 	}{
-		{"claude busy blocks", true, false, true, false},
-		{"codex busy blocks", false, true, true, false},
-		{"both busy blocks", true, true, true, false},
-		{"idle no dialog → no escape", false, false, false, false},
-		{"idle + dialog → escape", false, false, true, true},
+		{"any busy blocks", true, true, false},
+		{"idle no dialog → no escape", false, false, false},
+		{"idle + dialog → escape", false, true, true},
 	}
 	for _, c := range cases {
-		if got := shouldDismissUsageDialog(c.claudeBusy, c.codexBusy, c.screenMatch); got != c.want {
-			t.Errorf("%s: shouldDismissUsageDialog(%v,%v,%v) = %v, want %v",
-				c.name, c.claudeBusy, c.codexBusy, c.screenMatch, got, c.want)
+		if got := shouldDismissUsageDialog(c.anyBusy, c.screenMatch); got != c.want {
+			t.Errorf("%s: shouldDismissUsageDialog(%v,%v) = %v, want %v",
+				c.name, c.anyBusy, c.screenMatch, got, c.want)
 		}
 	}
 }

@@ -6,10 +6,11 @@
 > （甚至不一定能）受理 issue。推荐的用法是基于本仓库做你自己的自定义修改——本项目
 > 采用 MIT 协议，可以随意修改。
 
-面向终端的个人 tmux 工作流，用来驱动 AI 编码 agent（Claude Code、Codex 及自定义
-provider）：为每个 agent 开一个三 pane 窗口（agent / git / run），由一个小型 Go
+面向终端的个人 tmux 工作流，用来驱动 AI 编码 agent（Claude Code、Codex、Grok Build
+及自定义 provider）：为每个 agent 开一个三 pane 窗口（agent / git / run），由一个小型 Go
 daemon 自动命名并追踪这些窗口的状态，在 tmux 状态栏呈现 ⏳/🔔 任务状态与桌面通知，
-还能在崩溃后快照 / 恢复整个 workspace。
+还能在崩溃后快照 / 恢复整个 workspace。Client 探测经 `internal/agentclient` Adapter
+注册表（见 `docs/ARCHITECTURE.md`「Agent Adapter」）。
 
 所有能力都通过 `scripts/deploy.sh`（或上层的 `scripts/setup` 向导）接入真实 tmux
 环境，也可干净卸载。

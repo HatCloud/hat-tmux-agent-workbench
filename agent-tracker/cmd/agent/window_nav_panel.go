@@ -1527,6 +1527,8 @@ func (m *windowNavPanelModel) renderRow(styles paletteStyles, row windowNavRow, 
 		switch {
 		case row.agentClient == "codex":
 			providerStr = "Codex"
+		case row.agentClient == "grok":
+			providerStr = "Grok"
 		default:
 			providerStr = row.agentProvider
 		}

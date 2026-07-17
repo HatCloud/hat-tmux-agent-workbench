@@ -60,9 +60,20 @@ skipped_duplicate=0
 skipped_missing_repo=0
 first_restored_target=""
 
-while IFS=$'\t' read -r session_name window_index window_name repo_root layout claude_sid; do
+while IFS=$'\t' read -r session_name window_index window_name repo_root layout col6 col7; do
   [[ -z "${session_name}${window_index}${window_name}${repo_root}" ]] && continue
   layout="${layout:-landscape}"
+
+  # Dual-read: 6 cols → client=claude, key=col6; 7 cols → client=col6, key=col7.
+  agent_client=""
+  session_key=""
+  if [[ -n "${col7:-}" ]]; then
+    agent_client="${col6:-}"
+    session_key="${col7%%[[:space:]]*}"
+  elif [[ -n "${col6:-}" ]]; then
+    agent_client="claude"
+    session_key="${col6%%[[:space:]]*}"
+  fi
 
   if [[ ! -d "$repo_root" ]]; then
     skipped_missing_repo=$((skipped_missing_repo + 1))
@@ -88,13 +99,22 @@ while IFS=$'\t' read -r session_name window_index window_name repo_root layout c
   "$layout_script" "$window_id" "$repo_root" "$layout"
   tmux rename-window -t "$window_id" "$window_name"
 
-  # Claude Code 窗口：往 ai 格预填 `claude --resume <id>`，但不回车（-l 字面发送）。
-  # 用户回到窗口确认后自己按 Enter 续上崩溃前的对话。
-  if [[ -n "${claude_sid:-}" ]]; then
-    # 防御旧版（修复前）写坏的 manifest：第 6 列可能粘上了 cwd，截到首个空白/制表符为止。
-    claude_sid="${claude_sid%%[[:space:]]*}"
+  # Prefill resume command (literal -l, no Enter). Unknown client → layout only.
+  # Only allow uuid-ish / urlsafe keys (align Go ResumeArgv sanitize).
+  if [[ -n "$session_key" ]] && [[ "$session_key" =~ ^[A-Za-z0-9._:-]+$ ]]; then
     ai_pane="$(tmux list-panes -t "$window_id" -F '#{pane_index} #{pane_id}' | sort -n | awk 'NR==1{print $2}')"
-    tmux send-keys -l -t "$ai_pane" "claude --resume $claude_sid"
+    case "$agent_client" in
+      codex) resume_cmd="codex resume $session_key" ;;
+      grok)  resume_cmd="grok --resume $session_key" ;;
+      claude|"") resume_cmd="claude --resume $session_key" ;;
+      *) resume_cmd="" ;;
+    esac
+    if [[ -n "$resume_cmd" ]]; then
+      tmux send-keys -l -t "$ai_pane" "$resume_cmd"
+    fi
+    if [[ -n "$agent_client" ]]; then
+      tmux set -w -t "$window_id" @agent_client "$agent_client" 2>/dev/null || true
+    fi
   fi
 
   if [[ -z "$first_restored_target" ]]; then
