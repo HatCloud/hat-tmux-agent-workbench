@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/ipc"
 )
 
@@ -210,6 +211,19 @@ func runTmuxSyncNames(args []string) error {
 					status = "limited"
 				}
 				reconcileTaskStatus(sessionID, windowID, aiPane, meta.Title, status, taskByPane[aiPane])
+			} else {
+				// Grok (and future adapters): registry Detect only.
+				acIdx := agentclient.BuildIndex()
+				tag := tmuxWindowOption(windowID, "@agent_client")
+				if live, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(aiPane), tag); ok {
+					if live.Title != "" {
+						setWindowOption(windowID, "@agent_title", agentTitleForWindow(live.Title))
+					}
+					// unknown must not finish_task (design: no false completion 🔔)
+					if live.Status != agentclient.StatusUnknown && live.Status != "" {
+						reconcileTaskStatus(sessionID, windowID, aiPane, live.Title, live.Status, taskByPane[aiPane])
+					}
+				}
 			}
 		}
 	}

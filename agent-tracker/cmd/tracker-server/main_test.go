@@ -197,7 +197,7 @@ func TestMarkTaskAttentionErrorKeepsTaskInProgress(t *testing.T) {
 }
 
 func TestAttentionNotificationMessage(t *testing.T) {
-	if got := attentionNotificationMessage("error"); got != "⚠️ Codex 执行出错，请查看窗口" {
+	if got := attentionNotificationMessage("error"); got != "⚠️ Agent 执行出错，请查看窗口" {
 		t.Fatalf("error notification = %q", got)
 	}
 	if got := attentionNotificationMessage("asking"); got != "❓ 有问题需要你回答" {

@@ -793,7 +793,7 @@ func (s *server) notifyResponded(target tmuxTarget) {
 // attentionNotificationMessage keeps error notifications distinct from questions.
 func attentionNotificationMessage(attention string) string {
 	if attention == "error" {
-		return "⚠️ Codex 执行出错，请查看窗口"
+		return "⚠️ Agent 执行出错，请查看窗口"
 	}
 	return "❓ 有问题需要你回答"
 }

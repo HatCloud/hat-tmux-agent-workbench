@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/statustag"
 )
 
@@ -154,12 +155,33 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 		built := buildClaudeIndex()
 		idx = &built
 	}
-	meta, claudePID, hasClaude := idx.sessionForPanePID(panePID(aiPane))
+	pane := panePID(aiPane)
+	meta, claudePID, hasClaude := idx.sessionForPanePID(pane)
 	codexMeta, _, hasCodex := codexThreadForPane(aiPane, idx)
+	// Registry path (Grok + generic). Claude/Codex keep legacy enrichment for
+	// provider/limited/error parity until full cutover; Grok is registry-only.
+	acIdx := agentclient.BuildIndex()
+	regLive, hasReg := agentclient.DefaultRegistry().DetectForPane(acIdx, pane, client)
 	liveTitle := ""
 	liveStatus := ""
 
-	if hasClaude {
+	if hasReg && regLive.Client == "grok" {
+		client = "grok"
+		liveTitle = agentTitleForWindow(regLive.Title)
+		liveStatus = regLive.Status
+		if regLive.Status == agentclient.StatusUnknown {
+			liveStatus = "" // do not show false [I]; skip finish path via empty/non-idle
+		}
+		if regLive.Model != "" {
+			model = regLive.Model
+		}
+		if tmuxWindowOption(windowID, "@agent_client") == "" {
+			setWindowOption(windowID, "@agent_client", "grok")
+		}
+		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
+			setWindowOption(windowID, "@agent_model", model)
+		}
+	} else if hasClaude {
 		client = "claude"
 		// Live model from the JSONL tail (latest assistant turn) is authoritative:
 		// it tracks in-session /model switches and provider switches that the
@@ -272,14 +294,14 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 			}
 		}
 	} else {
-		// No live claude/codex in this window.
+		// No live claude/codex/grok in this window.
 		if client != "" {
 			// Stale agent tags: either the agent exited or the launcher tagged the
 			// window before its process came up. Drop the live-detected
 			// provider/model so Window Nav shows no phantom provider (e.g. a
 			// lingering "anthropic") for a window with no running agent. Keep
 			// @agent_client as the window's structural identity; it is refilled
-			// when a claude/codex process appears.
+			// when a claude/codex/grok process appears.
 			if tmuxWindowOption(windowID, "@agent_provider") != "" {
 				_ = runTmux("set", "-wu", "-t", windowID, "@agent_provider")
 			}

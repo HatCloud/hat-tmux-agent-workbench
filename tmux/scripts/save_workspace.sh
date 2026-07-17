@@ -92,25 +92,74 @@ while IFS= read -r window_id; do
   # 否则状态每秒变动会让快照内容反复变化、--auto 去重失效，且恢复后残留旧状态。
   window_name="${window_name#\[*\] }"
 
-  # 若该 ai pane 跑的是 Claude Code，取 claude_report.sh 落盘的 session id（第 6 列）。
-  # cwd 守卫：映射里记的 cwd 与当前 ai pane cwd 不符则视为 pane id 被回收，丢弃。
-  # map 文件是单行 `sid<TAB>cwd`，必须按 TAB 拆字段；早先误用 sed 行号会把整行
-  # （含 cwd）当成 sid，污染第 6 列。
-  claude_sid=""
-  map_file="${workspace_dir}/claude-sessions/${ai_pane//[^A-Za-z0-9]/_}"
-  if [[ -f "$map_file" ]]; then
-    map_cwd=""
-    IFS=$'\t' read -r claude_sid map_cwd < "$map_file" || true
-    [[ -n "$map_cwd" && "$map_cwd" != "$first_pane_path" ]] && claude_sid=""
+  # Session resume key: 7-column format client + session_key (design HAT-596).
+  # Claude: Stop-hook map under workspace_dir/claude-sessions/ (legacy).
+  # Grok: active_sessions.json by pane subtree pid when @agent_client=grok.
+  # Codex: optional empty unless we can resolve a thread id cheaply.
+  agent_client="$(tmux show-options -vwq -t "$window_id" @agent_client 2>/dev/null || true)"
+  session_key=""
+  case "$agent_client" in
+    grok)
+      # Match active_sessions pid against pane process tree (best-effort).
+      if [[ -f "${HOME}/.grok/active_sessions.json" ]]; then
+        pane_pid="$(tmux display-message -p -t "$ai_pane" '#{pane_pid}' 2>/dev/null || true)"
+        if [[ -n "$pane_pid" ]]; then
+          session_key="$(python3 - "$pane_pid" <<'PY' 2>/dev/null || true
+import json, os, sys
+pid = int(sys.argv[1])
+# include descendants via pgrep -P BFS
+import subprocess
+tree = {pid}
+stack = [pid]
+while stack:
+    p = stack.pop()
+    try:
+        out = subprocess.check_output(["pgrep", "-P", str(p)], text=True)
+    except Exception:
+        out = ""
+    for line in out.split():
+        c = int(line)
+        if c not in tree:
+            tree.add(c)
+            stack.append(c)
+path = os.path.expanduser("~/.grok/active_sessions.json")
+for e in json.load(open(path)):
+    if int(e.get("pid") or 0) in tree:
+        print(e.get("session_id") or "")
+        break
+PY
+)"
+        fi
+      fi
+      ;;
+    codex)
+      # No cheap stable key without Go Detect; leave empty (layout-only restore).
+      session_key=""
+      ;;
+    *)
+      # Claude (default / empty client): legacy map file.
+      agent_client="${agent_client:-claude}"
+      map_file="${workspace_dir}/claude-sessions/${ai_pane//[^A-Za-z0-9]/_}"
+      if [[ -f "$map_file" ]]; then
+        map_cwd=""
+        IFS=$'\t' read -r session_key map_cwd < "$map_file" || true
+        [[ -n "$map_cwd" && "$map_cwd" != "$first_pane_path" ]] && session_key=""
+      fi
+      ;;
+  esac
+  # Drop client when no key (keep row layout-only with empty cols).
+  if [[ -z "$session_key" ]]; then
+    agent_client=""
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$session_name" \
     "$window_index" \
     "$window_name" \
     "$repo_root" \
     "$(detect_layout "$window_id")" \
-    "$claude_sid" >> "$tmp"
+    "$agent_client" \
+    "$session_key" >> "$tmp"
   saved_count=$((saved_count + 1))
 done < <(tmux list-windows -a -F '#{window_id}')
 
