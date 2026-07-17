@@ -737,7 +737,7 @@ func applyOnFocusRename(sessionID, windowID, paneID string) {
 	if aiPane == "" {
 		aiPane = paneID
 	}
-	name := agentWindowName(windowID, sessionID, aiPane, &ci)
+	name := agentWindowName(windowID, sessionID, aiPane, &ci, nil)
 	if name == "" {
 		return
 	}

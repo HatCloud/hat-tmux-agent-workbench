@@ -146,7 +146,9 @@ func panePID(paneID string) int {
 // project/name respects the show_path config toggle.
 // [model] is appended when show_model is on and a model is detected.
 // Empty for non-agent windows. ci is reused across windows; pass nil for a one-shot.
-func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string {
+// agentWindowName builds the tab name. acIdx is a shared process Index for this
+// sync pass (nil → BuildIndex once for one-shot callers).
+func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex, acIdx *agentclient.Index) string {
 	client := tmuxWindowOption(windowID, "@agent_client")
 	model := tmuxWindowOption(windowID, "@agent_model")
 
@@ -158,25 +160,29 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex) string
 	pane := panePID(aiPane)
 	meta, claudePID, hasClaude := idx.sessionForPanePID(pane)
 	codexMeta, _, hasCodex := codexThreadForPane(aiPane, idx)
-	// Registry path (Grok + generic). Claude/Codex keep legacy enrichment for
-	// provider/limited/error parity until full cutover; Grok is registry-only.
-	acIdx := agentclient.BuildIndex()
+	// Registry path (Grok + future). Claude/Codex keep legacy enrichment for
+	// provider/limited/error parity until full cutover.
+	if acIdx == nil {
+		acIdx = agentclient.BuildIndex()
+	}
 	regLive, hasReg := agentclient.DefaultRegistry().DetectForPane(acIdx, pane, client)
 	liveTitle := ""
 	liveStatus := ""
 
-	if hasReg && regLive.Client == "grok" {
-		client = "grok"
+	// Prefer registry for non-claude/codex clients (currently Grok). Avoid
+	// client=="grok" string in assemble path — branch on "not covered by legacy".
+	if hasReg && !hasClaude && !hasCodex {
+		client = regLive.Client
 		liveTitle = agentTitleForWindow(regLive.Title)
 		liveStatus = regLive.Status
 		if regLive.Status == agentclient.StatusUnknown {
 			liveStatus = "" // do not show false [I]; skip finish path via empty/non-idle
 		}
 		if regLive.Model != "" {
-			model = regLive.Model
+			model = sanitizeWindowMarker(regLive.Model)
 		}
-		if tmuxWindowOption(windowID, "@agent_client") == "" {
-			setWindowOption(windowID, "@agent_client", "grok")
+		if tmuxWindowOption(windowID, "@agent_client") == "" && client != "" {
+			setWindowOption(windowID, "@agent_client", client)
 		}
 		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
 			setWindowOption(windowID, "@agent_model", model)
@@ -527,7 +533,9 @@ func sanitizeWindowMarker(s string) string {
 // see the complete name. Truncation is a display concern applied only at the
 // status-bar format (window-status-format's width-limited #W).
 func agentTitleForWindow(title string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(title)), " ")
+	// Collapse whitespace then strip control / '#' so model-generated titles
+	// cannot corrupt tmux status formats (same hygiene as ssh markers).
+	return sanitizeWindowMarker(strings.Join(strings.Fields(strings.TrimSpace(title)), " "))
 }
 
 // modelForPID reads the raw model name from the Claude process args (--model <value>).

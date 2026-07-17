@@ -36,7 +36,9 @@
 
 **Grok 状态**：events 尾映射 busy/asking/idle；解析失败 → `unknown`（**不**驱动 finish_task，避免假完成 🔔）。Headless：`grok -p` / `grok agent` 过滤。
 
-**扩展第四 client**：实现 `Adapter` + `Register()` + launcher 一行 + 文档；不要在 `window_naming` 再加 `if client==` 业务分叉。Claude/Codex 的 limited/error 富化仍有部分逻辑在 `cmd/agent`（渐进迁入 adapter）。
+**扩展第四 client**：实现 `Adapter` + `Register()` + launcher 一行 + 文档。`window_naming` 对「无 Claude/Codex 命中」走 Registry 通用分支（Grok 已走此路）。
+
+**Known debt（partial cutover）**：Claude/Codex limited/error/provider 富化仍在 `cmd/agent` legacy 路径；S4「消费方零 client 字面分叉」未完全关闭。Grok **无** `reset` quota timer 信号源（`quotaResetFireAt` 仅 Claude/Codex）。
 
 三个 Go 二进制（`agent-tracker/cmd/`）：
 

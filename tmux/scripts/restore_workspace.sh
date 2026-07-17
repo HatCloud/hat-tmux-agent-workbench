@@ -100,7 +100,8 @@ while IFS=$'\t' read -r session_name window_index window_name repo_root layout c
   tmux rename-window -t "$window_id" "$window_name"
 
   # Prefill resume command (literal -l, no Enter). Unknown client → layout only.
-  if [[ -n "$session_key" ]]; then
+  # Reject keys with shell/meta chars (align Go ResumeArgv sanitize).
+  if [[ -n "$session_key" ]] && [[ "$session_key" != *['$`\"'\ \	\n\r\#]* ]]; then
     ai_pane="$(tmux list-panes -t "$window_id" -F '#{pane_index} #{pane_id}' | sort -n | awk 'NR==1{print $2}')"
     case "$agent_client" in
       codex) resume_cmd="codex resume $session_key" ;;

@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/paths"
 )
 
@@ -450,43 +451,44 @@ func screenShowsUsageLimit(screen string) bool {
 }
 
 // shouldDismissUsageDialog is the pure safety gate for the timer-fire Escape.
-// Escape is sent ONLY when the usage-limit box is actually on screen AND neither
-// the pane's Claude nor Codex session is actively generating. A blind Escape
-// mid-turn would abort an in-flight response; an Escape with no dialog present
-// could wipe a user's unsent draft or disrupt an asking/waiting prompt — so both
-// conditions must hold. This is the only safety gate for timer firing.
-func shouldDismissUsageDialog(claudeBusy, codexBusy, screenMatch bool) bool {
-	if claudeBusy || codexBusy {
+// Escape is sent ONLY when the usage-limit box is actually on screen AND no live
+// agent (Claude/Codex/Grok/…) is mid-turn. A blind Escape mid-turn would abort
+// an in-flight response; an Escape with no dialog present could wipe a draft.
+func shouldDismissUsageDialog(anyAgentBusy, screenMatch bool) bool {
+	if anyAgentBusy {
 		return false
 	}
 	return screenMatch
 }
 
 // dismissUsageLimitDialog clears a Claude usage-limit dialog that would otherwise
-// swallow the keys a timer injects. It sends Escape only when the dialog is
-// detected on screen and neither the Claude nor the Codex session in the pane is
-// busy (see shouldDismissUsageDialog) — never a blind Escape into an in-flight
-// turn or an idle prompt that may hold a draft.
+// swallow the keys a timer injects. Busy guard covers any client via Registry.
 func dismissUsageLimitDialog(paneID string, ci *claudeIndex) {
 	if ci == nil {
 		built := buildClaudeIndex()
 		ci = &built
 	}
-	claudeBusy := false
+	anyBusy := false
 	if meta, _, ok := ci.sessionForPanePID(panePID(paneID)); ok {
-		claudeBusy = strings.EqualFold(meta.Status, "busy")
+		anyBusy = strings.EqualFold(meta.Status, "busy")
 	}
-	// Codex windows never populate byPID, so the Claude guard alone would let a
-	// blind Escape land mid-generation on Codex — guard it explicitly too.
-	codexBusy := false
-	if meta, _, ok := codexThreadForPane(paneID, ci); ok {
-		codexBusy = strings.EqualFold(meta.Status, "busy")
+	if !anyBusy {
+		if meta, _, ok := codexThreadForPane(paneID, ci); ok {
+			anyBusy = strings.EqualFold(meta.Status, "busy")
+		}
+	}
+	if !anyBusy {
+		// Grok (and future adapters): registry Detect.
+		acIdx := agentclient.BuildIndex()
+		if live, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(paneID), ""); ok {
+			anyBusy = strings.EqualFold(live.Status, agentclient.StatusBusy)
+		}
 	}
 	screenMatch := false
 	if out, err := runTmuxOutput("capture-pane", "-p", "-t", paneID); err == nil {
 		screenMatch = screenShowsUsageLimit(out)
 	}
-	if !shouldDismissUsageDialog(claudeBusy, codexBusy, screenMatch) {
+	if !shouldDismissUsageDialog(anyBusy, screenMatch) {
 		return
 	}
 	_ = runTmux("send-keys", "-t", paneID, "Escape")

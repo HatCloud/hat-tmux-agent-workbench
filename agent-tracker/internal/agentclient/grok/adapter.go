@@ -187,13 +187,31 @@ func readSummary(path string) (title, model string) {
 // would leave the window on [?] for the rest of the turn — which users hit
 // when they queue a message (Enter while busy) mid-tooling.
 func statusFromEvents(path string) string {
-	data, err := os.ReadFile(path)
+	// Tail-only read (align Claude 256KB cap) — never load multi-MB jsonl fully.
+	const capN = 256 << 10
+	f, err := os.Open(path)
 	if err != nil {
 		return agentclient.StatusUnknown
 	}
-	const capN = 256 << 10
-	if len(data) > capN {
-		data = data[len(data)-capN:]
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return agentclient.StatusUnknown
+	}
+	start := int64(0)
+	if info.Size() > capN {
+		start = info.Size() - capN
+	}
+	if start > 0 {
+		if _, err := f.Seek(start, 0); err != nil {
+			return agentclient.StatusUnknown
+		}
+	}
+	buf := make([]byte, info.Size()-start)
+	n, _ := f.Read(buf)
+	data := buf[:n]
+	if start > 0 {
+		// Drop partial first line after seek.
 		if i := strings.IndexByte(string(data), '\n'); i >= 0 {
 			data = data[i+1:]
 		}
