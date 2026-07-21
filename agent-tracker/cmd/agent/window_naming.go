@@ -1,9 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,8 +10,8 @@ import (
 	"github.com/david/agent-tracker/internal/statustag"
 )
 
-// 窗口自动命名：agentWindowName 拼名、状态前缀、provider/model 探测、
-// 标题截断与净化。从 claude_session.go 拆出。
+// 窗口自动命名：agentWindowName 拼名、状态前缀与窗口选项写入。
+// provider/model/[L]/[E] 的探测在 internal/agentclient 各 adapter 内。
 
 // statusTag maps a Claude session status to the window-name prefix.
 // statusTag renders a live status as its window-name prefix. The vocabulary
@@ -24,67 +21,9 @@ func statusTag(status string) string {
 	return statustag.ForStatus(status)
 }
 
-// providersRelDir is the provider .env directory relative to home
-// (HAT-574: 迁入 ~/.hat-env/providers 单一真身).
-const providersRelDir = ".hat-env/providers"
-
-// loadProviderMap reads ~/.hat-env/providers/*.env into a map from the provider's
-// ANTHROPIC_BASE_URL to its name (file basename). official unsets the URL and so
-// is absent (treated as the empty-URL default).
-func loadProviderMap() map[string]string {
-	m := map[string]string{}
-	entries, err := os.ReadDir(filepath.Join(homeDir(), providersRelDir))
-	if err != nil {
-		return m
-	}
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".env") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(homeDir(), providersRelDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "unset") || !strings.Contains(line, "ANTHROPIC_BASE_URL=") {
-				continue
-			}
-			v := line[strings.Index(line, "ANTHROPIC_BASE_URL=")+len("ANTHROPIC_BASE_URL="):]
-			if v = strings.Trim(strings.TrimSpace(v), `"'`); v != "" {
-				m[v] = strings.TrimSuffix(e.Name(), ".env")
-			}
-			break
-		}
-	}
-	return m
-}
-
-// providerForPID reads the Claude process env's ANTHROPIC_BASE_URL and maps it to
-// a provider name. Empty/unset → "anthropic" (the official login provider, which unsets the URL).
-func providerForPID(pid int, providers map[string]string) string {
-	if pid <= 0 {
-		return ""
-	}
-	out, err := runCommandCombinedOutput(3*time.Second, "ps", "eww", "-p", strconv.Itoa(pid))
-	if err != nil {
-		return ""
-	}
-	for _, tok := range strings.Fields(string(out)) {
-		if strings.HasPrefix(tok, "ANTHROPIC_BASE_URL=") {
-			url := strings.TrimPrefix(tok, "ANTHROPIC_BASE_URL=")
-			if name, ok := providers[url]; ok {
-				return name
-			}
-			return ""
-		}
-	}
-	return "anthropic"
-}
-
 // agentAIPane returns the window's primary AI pane (@agent_pane_role=ai),
 // falling back to its active pane. Empty when the window has no panes.
-func agentAIPane(windowID string, ci *claudeIndex) string {
+func agentAIPane(windowID string, acIdx *agentclient.Index) string {
 	if strings.TrimSpace(windowID) == "" {
 		return ""
 	}
@@ -109,11 +48,11 @@ func agentAIPane(windowID string, ci *claudeIndex) string {
 	}
 	// No pane tagged role=ai (e.g. a window rebuilt by workspace-restore that
 	// lost its @agent_pane_role). Prefer the pane whose process tree actually
-	// hosts a Claude session over the active pane, which may be the git/run/zsh
-	// pane when the user has focus there.
-	if ci != nil {
+	// hosts a live agent session over the active pane, which may be the
+	// git/run/zsh pane when the user has focus there.
+	if acIdx != nil {
 		for _, p := range paneIDs {
-			if _, _, ok := ci.sessionForPanePID(panePID(p)); ok {
+			if _, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(p), ""); ok {
 				return p
 			}
 		}
@@ -145,101 +84,47 @@ func panePID(paneID string) int {
 // Status [B]/[I] comes from the live Claude session.
 // project/name respects the show_path config toggle.
 // [model] is appended when show_model is on and a model is detected.
-// Empty for non-agent windows. ci is reused across windows; pass nil for a one-shot.
-// agentWindowName builds the tab name. acIdx is a shared process Index for this
-// sync pass (nil → BuildIndex once for one-shot callers).
-func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex, acIdx *agentclient.Index) string {
+// Empty for non-agent windows. live is the registry Detect result for the AI
+// pane (nil when no live agent session) — the caller detects once per window
+// and shares the snapshot with the reconcile path.
+func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveSession) string {
 	client := tmuxWindowOption(windowID, "@agent_client")
 	model := tmuxWindowOption(windowID, "@agent_model")
-
-	idx := ci
-	if idx == nil {
-		built := buildClaudeIndex()
-		idx = &built
-	}
-	pane := panePID(aiPane)
-	meta, claudePID, hasClaude := idx.sessionForPanePID(pane)
-	codexMeta, _, hasCodex := codexThreadForPane(aiPane, idx)
-	// Registry path (Grok + future). Claude/Codex keep legacy enrichment for
-	// provider/limited/error parity until full cutover.
-	if acIdx == nil {
-		acIdx = agentclient.BuildIndex()
-	}
-	regLive, hasReg := agentclient.DefaultRegistry().DetectForPane(acIdx, pane, client)
 	liveTitle := ""
 	liveStatus := ""
 
-	// Prefer registry for non-claude/codex clients (currently Grok). Avoid
-	// client=="grok" string in assemble path — branch on "not covered by legacy".
-	if hasReg && !hasClaude && !hasCodex {
-		client = regLive.Client
-		liveTitle = agentTitleForWindow(regLive.Title)
-		liveStatus = regLive.Status
-		if regLive.Status == agentclient.StatusUnknown {
+	if live != nil {
+		client = live.Client
+		liveTitle = agentTitleForWindow(live.Title)
+		liveStatus = live.Status
+		if liveStatus == agentclient.StatusUnknown {
 			liveStatus = "" // do not show false [I]; skip finish path via empty/non-idle
 		}
-		if regLive.Model != "" {
-			model = sanitizeWindowMarker(regLive.Model)
+		if live.Model != "" {
+			model = sanitizeWindowMarker(live.Model)
 		}
 		// Always refresh structural client from live Detect so a stale launcher
 		// tag (e.g. codex) cannot outlive a Grok process and mislabel Window Nav.
 		if client != "" && tmuxWindowOption(windowID, "@agent_client") != client {
 			setWindowOption(windowID, "@agent_client", client)
 		}
-		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
-			setWindowOption(windowID, "@agent_model", model)
-		}
-	} else if hasClaude {
-		client = "claude"
-		// Live model from the JSONL tail (latest assistant turn) is authoritative:
-		// it tracks in-session /model switches and provider switches that the
-		// launch-time process args miss. Fall back to the process --model arg only
-		// when no assistant message has been written yet.
-		if m := liveModelFromSession(meta); m != "" {
-			model = m
-		} else if m := modelForPID(claudePID); m != "" {
-			model = m
-		}
-		// Read full JSONL only for the title fallback (latest AI-generated title).
-		var aiTitle string
-		if meta.Name == "" {
-			_, aiTitle = readSessionJSONL(meta)
-		}
-		// Detect the live provider from the Claude process env (ANTHROPIC_BASE_URL
-		// → providers/*.env). This is the single authoritative source; the
-		// @agent_provider option is only a cache written once at window creation
-		// and goes stale (or is missing) when the provider is switched or the
-		// window is rebuilt by workspace-restore. Persist it so Window Nav and
-		// the status bar read the correct value.
-		provider := providerForPID(claudePID, idx.providers)
-		if provider != "" && tmuxWindowOption(windowID, "@agent_provider") != provider {
-			setWindowOption(windowID, "@agent_provider", provider)
-		}
-		// Fallback: read ANTHROPIC_MODEL from provider env file (e.g. minimax).
-		if model == "" {
-			model = modelFromProviderEnv(provider)
+		// The live provider (Claude: process env ANTHROPIC_BASE_URL) is the
+		// single authoritative source; @agent_provider is only a creation-time
+		// cache that goes stale on provider switches or workspace-restore.
+		if live.Provider != "" && tmuxWindowOption(windowID, "@agent_provider") != live.Provider {
+			setWindowOption(windowID, "@agent_provider", live.Provider)
 		}
 		// Persist raw model name so Window Nav and other consumers can read it.
 		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
 			setWindowOption(windowID, "@agent_model", model)
 		}
-		if tmuxWindowOption(windowID, "@agent_client") == "" {
-			setWindowOption(windowID, "@agent_client", "claude")
-		}
-		// Use AI-generated title as default name when user hasn't set one.
-		if meta.Name == "" && aiTitle != "" {
-			meta.Name = aiTitle
-		}
-		liveTitle = agentTitleForWindow(meta.Name)
-		liveStatus = meta.Status
-		// A session whose latest turn died on a usage-limit 429 is its own
-		// "limited" status ([L]): the dialog blocks input and no timer/idle
-		// semantics apply. The reset instant is stamped on the window so the
-		// same sync pass (task reconcile) and other consumers reuse the probe.
+		// The reset instant of an unresolved usage limit ([L]) is stamped on the
+		// window so the same sync pass (task reconcile) and the timer path reuse
+		// the probe. Only touched while not busy — the adapter probes limited
+		// only then, and a busy pass must not clear a still-valid stamp.
 		if !strings.EqualFold(liveStatus, "busy") {
-			if resetAt, ok := claudeLimitResetFromSession(meta, time.Now()); ok {
-				liveStatus = "limited"
-				stamp := strconv.FormatInt(resetAt.Unix(), 10)
+			if live.LimitResetAt != nil {
+				stamp := strconv.FormatInt(live.LimitResetAt.Unix(), 10)
 				if tmuxWindowOption(windowID, "@agent_limit_reset_at") != stamp {
 					setWindowOption(windowID, "@agent_limit_reset_at", stamp)
 				}
@@ -247,58 +132,20 @@ func agentWindowName(windowID, sessionID, aiPane string, ci *claudeIndex, acIdx 
 				_ = runTmux("set", "-wu", "-t", windowID, "@agent_limit_reset_at")
 			}
 		}
-		// A turn that stopped on an API error (5xx/529 overloaded, auth, etc.) is
-		// the "error" status ([E]) — mirroring Codex. Only checked when the session
-		// isn't busy and didn't hit the 429 limit (which is its own [L]). We stamp
-		// @agent_error_at/type for recoverable (5xx) errors so the same sync pass's
-		// reconcileClaudeErrorRetry can drive a bounded auto-retry; non-recoverable
-		// errors show [E] but carry no retry stamp.
-		if !strings.EqualFold(liveStatus, "busy") && !strings.EqualFold(liveStatus, "limited") {
-			if terr, ok := claudeErrorFromSession(meta); ok {
-				liveStatus = "error"
-				if terr.Retryable() {
-					setWindowTimeOption(windowID, optErrorAt, terr.At)
-					if terr.Type != "" && tmuxWindowOption(windowID, optErrorType) != terr.Type {
-						setWindowOption(windowID, optErrorType, terr.Type)
-					}
-				} else {
-					unsetWindowOption(windowID, optErrorAt)
-					unsetWindowOption(windowID, optErrorType)
-				}
-			} else {
-				unsetWindowOption(windowID, optErrorAt)
-				unsetWindowOption(windowID, optErrorType)
+		// A retryable terminal error ([E], 5xx/529) stamps @agent_error_at/type
+		// so this pass's reconcileErrorRetry can drive a bounded auto-retry;
+		// non-recoverable errors show [E] but carry no retry stamp.
+		if live.Error != nil && live.Error.Retryable {
+			setWindowTimeOption(windowID, optErrorAt, live.Error.At)
+			if live.Error.Type != "" && tmuxWindowOption(windowID, optErrorType) != live.Error.Type {
+				setWindowOption(windowID, optErrorType, live.Error.Type)
 			}
 		} else {
-			unsetWindowOption(windowID, optErrorAt)
-			unsetWindowOption(windowID, optErrorType)
-		}
-	} else if hasCodex {
-		client = "codex"
-		if codexMeta.Model != "" {
-			model = codexMeta.Model
-		}
-		liveTitle = codexMeta.Title
-		liveStatus = codexMeta.Status
-		if tmuxWindowOption(windowID, "@agent_client") == "" {
-			setWindowOption(windowID, "@agent_client", "codex")
-		}
-		if model != "" && tmuxWindowOption(windowID, "@agent_model") != model {
-			setWindowOption(windowID, "@agent_model", model)
-		}
-		// A codex thread whose latest rate_limits snapshot shows an exhausted
-		// window is its own "limited" status ([L]), mirroring the Claude 429
-		// probe above: the reset instant is stamped on the window so the same
-		// sync pass (task reconcile) and other consumers reuse it.
-		if !strings.EqualFold(liveStatus, "busy") {
-			if resetAt, ok := codexLimitResetFromMeta(codexMeta, time.Now()); ok {
-				liveStatus = "limited"
-				stamp := strconv.FormatInt(resetAt.Unix(), 10)
-				if tmuxWindowOption(windowID, "@agent_limit_reset_at") != stamp {
-					setWindowOption(windowID, "@agent_limit_reset_at", stamp)
-				}
-			} else if tmuxWindowOption(windowID, "@agent_limit_reset_at") != "" {
-				_ = runTmux("set", "-wu", "-t", windowID, "@agent_limit_reset_at")
+			if tmuxWindowOption(windowID, optErrorAt) != "" {
+				unsetWindowOption(windowID, optErrorAt)
+			}
+			if tmuxWindowOption(windowID, optErrorType) != "" {
+				unsetWindowOption(windowID, optErrorType)
 			}
 		}
 	} else {
@@ -538,84 +385,6 @@ func agentTitleForWindow(title string) string {
 	// Collapse whitespace then strip control / '#' so model-generated titles
 	// cannot corrupt tmux status formats (same hygiene as ssh markers).
 	return sanitizeWindowMarker(strings.Join(strings.Fields(strings.TrimSpace(title)), " "))
-}
-
-// modelForPID reads the raw model name from the Claude process args (--model <value>).
-func modelForPID(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	out, err := runCommandOutput(3*time.Second, "ps", "-p", strconv.Itoa(pid), "-o", "args=")
-	if err != nil {
-		return ""
-	}
-	args := strings.Fields(string(out))
-	for i, arg := range args {
-		if arg == "--model" && i+1 < len(args) {
-			return args[i+1]
-		}
-		if strings.HasPrefix(arg, "--model=") {
-			return strings.TrimPrefix(arg, "--model=")
-		}
-	}
-	return ""
-}
-
-// modelFromSessionJSONL is a convenience wrapper used for model-only lookups.
-func modelFromSessionJSONL(pid int) string {
-	sessionFile := filepath.Join(claudeSessionsDir(), fmt.Sprintf("%d.json", pid))
-	data, err := os.ReadFile(sessionFile)
-	if err != nil {
-		return ""
-	}
-	var meta claudeSessionMeta
-	if json.Unmarshal(data, &meta) != nil {
-		return ""
-	}
-	model, _ := readSessionJSONL(meta)
-	return model
-}
-
-// modelFromProviderEnv reads ANTHROPIC_MODEL from a provider .env file.
-// Used for providers (e.g. minimax) that set the model via env var, not --model flag.
-func modelFromProviderEnv(provider string) string {
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(homeDir(), providersRelDir, provider+".env"))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		for _, prefix := range []string{"export ANTHROPIC_MODEL=", "ANTHROPIC_MODEL="} {
-			if after, ok := strings.CutPrefix(line, prefix); ok {
-				return strings.Trim(strings.TrimSpace(after), "\"'")
-			}
-		}
-	}
-	return ""
-}
-
-// normalizeModelName maps raw model IDs to short family names for the status bar.
-// e.g. "claude-sonnet-4-6" → "sonnet", "MiniMax-M3" → "MiniMax-M3"
-func normalizeModelName(model string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return ""
-	}
-	lower := strings.ToLower(model)
-	for _, family := range []string{"opus", "sonnet", "haiku", "fable"} {
-		if strings.Contains(lower, family) {
-			return family
-		}
-	}
-	r := []rune(model)
-	if len(r) > 12 {
-		return string(r[:12]) + "…"
-	}
-	return model
 }
 
 // normalizeModelNameLong maps raw model IDs to a longer form for Window Nav.

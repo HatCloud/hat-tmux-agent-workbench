@@ -1,6 +1,7 @@
 package agentclient
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -76,6 +77,32 @@ func (idx *Index) CommandFor(pid int) string {
 		return ""
 	}
 	return idx.Commands[pid]
+}
+
+// Memo caches an adapter sidecar for the lifetime of this Index (one sync
+// pass), so per-pass loads (session dirs, lsof batches) run once, not once per
+// window. Not goroutine-safe: a sync pass is single-threaded by design.
+func (idx *Index) Memo(key string, load func() any) any {
+	if idx == nil {
+		return load()
+	}
+	if idx.SideCar == nil {
+		idx.SideCar = map[string]any{}
+	}
+	if v, ok := idx.SideCar[key]; ok {
+		return v
+	}
+	v := load()
+	idx.SideCar[key] = v
+	return v
+}
+
+// RunOutput executes a command with a deadline and returns stdout. Adapters use
+// it for sqlite3/lsof/ps probes so a hung subprocess can't stall a sync pass.
+func RunOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
 }
 
 // BuildIndexTimeout is available for callers that need a deadline wrapper later.

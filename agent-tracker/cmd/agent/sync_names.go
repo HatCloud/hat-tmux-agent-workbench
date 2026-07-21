@@ -125,18 +125,18 @@ func runTmuxSyncNames(args []string) error {
 	if err != nil {
 		return nil
 	}
-	ci := buildClaudeIndex()
-	// One process Index for all adapters this pass (avoid N×ps for N windows).
+	// One process Index for all adapters this pass (one ps; per-adapter sidecars
+	// — Claude sessions dir, Codex lsof batch — load lazily and memoize on it).
 	acIdx := agentclient.BuildIndex()
 	// Daemon task status per pane, to drive the 🔔 (completed-unread) icon from
-	// the live Claude busy/idle status.
+	// the live agent busy/idle status.
 	taskByPane := map[string]string{}
 	if st, err := trackerLoadState(""); err == nil && st != nil {
 		for _, tk := range st.Tasks {
 			taskByPane[tk.Pane] = tk.Status
 		}
 	}
-	checkAndFireTimers(&ci)
+	checkAndFireTimers(acIdx)
 
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if time.Now().After(deadline) {
@@ -147,8 +147,16 @@ func runTmuxSyncNames(args []string) error {
 			continue
 		}
 		sessionID, windowID := parts[0], parts[1]
-		aiPane := agentAIPane(windowID, &ci)
-		if name := agentWindowName(windowID, sessionID, aiPane, &ci, acIdx); name != "" {
+		aiPane := agentAIPane(windowID, acIdx)
+		// One registry Detect per window, shared by naming and reconcile below.
+		var live *agentclient.LiveSession
+		if aiPane != "" {
+			tag := tmuxWindowOption(windowID, "@agent_client")
+			if l, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(aiPane), tag); ok {
+				live = &l
+			}
+		}
+		if name := agentWindowName(windowID, sessionID, aiPane, live); name != "" {
 			autoRenameWindow(windowID, name)
 		} else if strings.TrimSpace(tmuxWindowOption(windowID, "@agent_window_name_auto")) != "" {
 			// A window we previously auto-named no longer qualifies (e.g. an ssh
@@ -186,45 +194,28 @@ func runTmuxSyncNames(args []string) error {
 					}
 				}
 			}
-			if meta, _, ok := ci.sessionForPanePID(panePID(aiPane)); ok {
-				// Persist session title so Window Nav can display it without re-parsing.
-				if meta.Name != "" {
-					setWindowOption(windowID, "@agent_title", agentTitleForWindow(meta.Name))
+			if live != nil {
+				// Persist the session title so Window Nav can display it without
+				// re-parsing. PersistTitle is adapter-gated: Claude only exposes a
+				// user-set name here (the auto ai-title must not overwrite a typed
+				// `prefix ]` title), Codex/Grok persist their auto titles.
+				if t := agentTitleForWindow(live.PersistTitle); t != "" {
+					setWindowOption(windowID, "@agent_title", t)
 				}
 				// Reuse the limited probe agentWindowName stamped above so the
 				// daemon sees "limited" (asking-like) instead of idle→completed.
-				if _, limited := windowQuotaLimitedUntil(windowID); limited &&
-					!strings.EqualFold(meta.Status, "busy") {
-					meta.Status = "limited"
-				}
-				reconcileTask(sessionID, windowID, aiPane, meta, taskByPane[aiPane])
-				// Auto-retry a turn that stopped on a recoverable API error, using
-				// the @agent_error_* stamp agentWindowName wrote this pass.
-				reconcileClaudeErrorRetry(windowID, aiPane, meta)
-			} else if meta, _, ok := codexThreadForPane(aiPane, &ci); ok {
-				if meta.Title != "" {
-					setWindowOption(windowID, "@agent_title", meta.Title)
-				}
-				// Reuse the limited probe agentWindowName stamped above so the
-				// daemon sees "limited" (asking-like) instead of idle→completed.
-				status := meta.Status
+				status := live.Status
 				if _, limited := windowQuotaLimitedUntil(windowID); limited &&
 					!strings.EqualFold(status, "busy") {
 					status = "limited"
 				}
-				reconcileTaskStatus(sessionID, windowID, aiPane, meta.Title, status, taskByPane[aiPane])
-			} else {
-				// Grok (and future adapters): shared Index + registry Detect.
-				tag := tmuxWindowOption(windowID, "@agent_client")
-				if live, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(aiPane), tag); ok {
-					if live.Title != "" {
-						setWindowOption(windowID, "@agent_title", agentTitleForWindow(live.Title))
-					}
-					// unknown must not finish_task (design: no false completion 🔔)
-					if live.Status != agentclient.StatusUnknown && live.Status != "" {
-						reconcileTaskStatus(sessionID, windowID, aiPane, live.Title, live.Status, taskByPane[aiPane])
-					}
+				// unknown must not finish_task (design: no false completion 🔔)
+				if status != agentclient.StatusUnknown && status != "" {
+					reconcileTaskStatus(sessionID, windowID, aiPane, agentTitleForWindow(live.Title), status, taskByPane[aiPane])
 				}
+				// Auto-retry a turn that stopped on a recoverable API error, using
+				// the @agent_error_* stamp agentWindowName wrote this pass.
+				reconcileErrorRetry(windowID, aiPane, live)
 			}
 		}
 	}
@@ -283,14 +274,10 @@ func reconcileActions(metaStatus, daemonStatus string) []reconcileAction {
 	}
 }
 
-// reconcileTask drives the daemon's task state from the live Claude session
+// reconcileTaskStatus drives the daemon's task state from the live agent
 // status so the status bar's 🔔 (completed-unread) reflects "finished while you
 // were away". busy → ensure a task exists (in_progress); busy→idle → finish it
 // (completed → 🔔 until focus acknowledges, with a grace debounce in the daemon).
-func reconcileTask(sessionID, windowID, pane string, meta claudeSessionMeta, daemonStatus string) {
-	reconcileTaskStatus(sessionID, windowID, pane, meta.Name, meta.Status, daemonStatus)
-}
-
 func reconcileTaskStatus(sessionID, windowID, pane, title, status, daemonStatus string) {
 	for _, act := range reconcileActions(strings.ToLower(strings.TrimSpace(status)), daemonStatus) {
 		env := &ipc.Envelope{SessionID: sessionID, WindowID: windowID, Pane: pane}

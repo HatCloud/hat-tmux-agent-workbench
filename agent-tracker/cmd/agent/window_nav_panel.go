@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/ipc"
 )
 
@@ -1142,16 +1143,18 @@ func (m *windowNavPanelModel) handlePromptViewKey(key string) (tea.Model, tea.Cm
 }
 
 func promptForWindow(windowID string) string {
-	ci := buildClaudeIndex()
-	aiPane := agentAIPane(windowID, &ci)
+	acIdx := agentclient.BuildIndex()
+	aiPane := agentAIPane(windowID, acIdx)
 	if aiPane == "" {
 		return ""
 	}
-	if meta, _, ok := ci.sessionForPanePID(panePID(aiPane)); ok {
-		return claudePromptFromSession(meta)
+	reg := agentclient.DefaultRegistry()
+	live, ok := reg.DetectForPane(acIdx, panePID(aiPane), tmuxWindowOption(windowID, "@agent_client"))
+	if !ok {
+		return ""
 	}
-	if meta, _, ok := codexThreadForPane(aiPane, &ci); ok {
-		return codexPromptFromRollout(meta.RolloutPath)
+	if fp, ok := reg.AdapterByID(live.Client).(agentclient.FirstPrompter); ok {
+		return fp.FirstPrompt(live)
 	}
 	return ""
 }

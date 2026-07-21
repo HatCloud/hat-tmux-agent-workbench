@@ -70,6 +70,16 @@ func (r *Registry) byID(id string) Adapter {
 	return nil
 }
 
+// AdapterByID returns the adapter with the given client ID, or nil. Consumers
+// use it to reach optional capabilities (FirstPrompter/QuotaProvider/…) for a
+// detected LiveSession's client.
+func (r *Registry) AdapterByID(id string) Adapter {
+	if r == nil {
+		return nil
+	}
+	return r.byID(strings.TrimSpace(strings.ToLower(id)))
+}
+
 // IDs returns adapter IDs in order.
 func (r *Registry) IDs() []string {
 	if r == nil {

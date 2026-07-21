@@ -1,37 +1,26 @@
 package main
 
-// Claude error detection + auto-retry.
-//
-// Codex surfaces a stopped-on-error turn via its SQLite "Turn error:" log
-// (resolveCodexStatus → "error"). Claude has no such status in its sessions
-// JSON: when a turn dies on an API error (429/5xx/529 overloaded) Claude Code
-// exhausts its own internal backoff, then writes a synthetic assistant record
-// into the project session JSONL with error/apiErrorStatus/isApiErrorMessage
-// and stops. We detect that terminal record here — mirroring the 429 "limited"
-// probe in quota.go — and surface it as the "error" status ([E]).
-//
-// When auto-retry is enabled, a recoverable error (5xx server-side, incl. 529)
-// drives a bounded retry: after an exponential backoff we `tmux send-keys` a
-// continuation message into the agent pane. Backoff/attempt state lives in
-// window options so it survives across sync passes and daemon restarts and
-// needs no in-memory bookkeeping.
+// Auto-retry engine for turns that stopped on a recoverable API error.
+// Detection lives in the agentclient adapters (Claude: session-JSONL terminal
+// record; Codex: SQLite "Turn error:") and surfaces as LiveSession.Error; the
+// window-naming pass stamps @agent_error_at/type for retryable errors. This
+// engine turns those stamps into a bounded retry: after an exponential backoff
+// it injects the adapter's RetryPolicy continuation message into the agent
+// pane. Backoff/attempt state lives in window options so it survives across
+// sync passes and daemon restarts and needs no in-memory bookkeeping.
 
 import (
-	"encoding/json"
 	"math"
 	"math/rand"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/david/agent-tracker/internal/agentclient"
 )
 
 // jitterFraction returns a pseudo-random value in [0,1) for backoff jitter.
 func jitterFraction() float64 { return rand.Float64() }
-
-// claudeRetryMessage is the continuation text injected into the agent pane to
-// re-drive a turn that died on a recoverable API error.
-const claudeRetryMessage = "Continue where you left off."
 
 // autoRetryBackoff is the wait before each successive retry attempt (attempt 0
 // waits 30s, attempt 1 waits 60s, …); attempts past the end reuse the last.
@@ -55,106 +44,6 @@ func retryBackoff(count int) time.Duration {
 		return autoRetryBackoff[len(autoRetryBackoff)-1]
 	}
 	return autoRetryBackoff[count]
-}
-
-// claudeTurnError describes the terminal API error a Claude turn died on.
-type claudeTurnError struct {
-	Type   string // the JSONL `error` field, e.g. "server_error", "rate_limit"
-	Status int    // apiErrorStatus (HTTP code)
-	At     time.Time
-}
-
-// Retryable reports whether auto-retry should attempt this error. Keyed on the
-// JSONL `error` category, because transient failures often carry NO HTTP status
-// (apiErrorStatus absent → Status==0): e.g. "Connection closed mid-response",
-// "Server error mid-response", "socket connection closed", "operation timed out".
-// Retryable (transient):
-//   - server_error at any status — 500/529 overloaded and the status-less
-//     connection/mid-response drops.
-//   - unknown WITHOUT a status — socket-closed / timeout network blips.
-//   - any explicit 5xx (defensive).
-//
-// Not retryable: 429 (→ "limited", handled separately), authentication_failed,
-// invalid_request, model_not_found, max_output_tokens, and unknown WITH a 4xx
-// status (402 billing / 400 bad request) — retrying can't fix those.
-func (e claudeTurnError) Retryable() bool {
-	if e.Status == 429 {
-		return false
-	}
-	switch e.Type {
-	case "server_error":
-		return true
-	case "unknown":
-		return e.Status == 0 // socket closed / timeout; exclude 4xx billing/bad-request
-	}
-	return e.Status >= 500
-}
-
-// scanClaudeError walks JSONL records (oldest→newest within the scanned tail)
-// and returns the terminal API error the latest turn ended on, if any. A later
-// non-error assistant or user message supersedes an earlier error (a subsequent
-// turn got through, or the user already retried), so the error is only returned
-// when it is the last meaningful turn outcome. 429 rate-limit records are
-// ignored here — they are the "limited" status, not a stop-on-error.
-func scanClaudeError(lines [][]byte) (claudeTurnError, bool) {
-	var (
-		cur  claudeTurnError
-		have bool
-	)
-	for _, line := range lines {
-		var entry struct {
-			Type           string `json:"type"`
-			Timestamp      string `json:"timestamp"`
-			Error          string `json:"error"`
-			APIErrorStatus int    `json:"apiErrorStatus"`
-			IsAPIError     bool   `json:"isApiErrorMessage"`
-		}
-		if json.Unmarshal(line, &entry) != nil {
-			continue
-		}
-		if entry.Type != "assistant" && entry.Type != "user" {
-			continue
-		}
-		isErr := entry.IsAPIError || (entry.Error != "" && entry.APIErrorStatus != 0)
-		if isErr && entry.APIErrorStatus != 429 {
-			at, err := time.Parse(time.RFC3339, entry.Timestamp)
-			if err != nil {
-				continue
-			}
-			cur = claudeTurnError{Type: entry.Error, Status: entry.APIErrorStatus, At: at}
-			have = true
-		} else {
-			// A normal message (or a 429, which is "limited" not "error")
-			// supersedes any earlier terminal error.
-			have = false
-		}
-	}
-	return cur, have
-}
-
-// claudeErrorFromJSONL reads the tail of a session JSONL and reports the
-// terminal API error its latest turn stopped on, if any.
-func claudeErrorFromJSONL(path string) (claudeTurnError, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return claudeTurnError{}, false
-	}
-	defer f.Close()
-	scanner := tailScanner(f, 256<<10)
-	var lines [][]byte
-	for scanner.Scan() {
-		lines = append(lines, append([]byte(nil), scanner.Bytes()...))
-	}
-	return scanClaudeError(lines)
-}
-
-// claudeErrorFromSession is the meta-addressed wrapper used by the sync loop.
-func claudeErrorFromSession(meta claudeSessionMeta) (claudeTurnError, bool) {
-	path := claudeSessionJSONLPath(meta)
-	if path == "" {
-		return claudeTurnError{}, false
-	}
-	return claudeErrorFromJSONL(path)
 }
 
 // ── Auto-retry scheduling ───────────────────────────────────────────────────
@@ -289,15 +178,24 @@ func clearRetryState(windowID string) {
 	unsetWindowOption(windowID, optRetryNextAt)
 }
 
-// reconcileClaudeErrorRetry runs one auto-retry pass for a Claude window, using
-// the @agent_error_* stamp agentWindowName wrote this pass. meta.Status gives
-// the live busy/idle signal used to avoid injecting mid-turn.
-func reconcileClaudeErrorRetry(windowID, aiPane string, meta claudeSessionMeta) {
+// reconcileErrorRetry runs one auto-retry pass for a window, using the
+// @agent_error_* stamp agentWindowName wrote this pass. The adapter's
+// RetryPolicy gates participation (missing / disabled → engine off for that
+// client) and supplies the continuation message; live.Status gives the
+// busy/idle signal used to avoid injecting mid-turn.
+func reconcileErrorRetry(windowID, aiPane string, live *agentclient.LiveSession) {
+	if live == nil {
+		return
+	}
+	policy := agentclient.RetryPolicy{}
+	if rp, ok := agentclient.DefaultRegistry().AdapterByID(live.Client).(agentclient.RetryPolicier); ok {
+		policy = rp.RetryPolicy()
+	}
 	cfg := loadAppConfig()
 	in := retryInput{
-		Enabled:  autoRetrySetting(cfg),
+		Enabled:  policy.Enabled && autoRetrySetting(cfg),
 		HasError: !windowTimeOption(windowID, optErrorAt).IsZero(),
-		Busy:     isBusyStatus(meta.Status),
+		Busy:     isBusyStatus(live.Status),
 		ErrorAt:  windowTimeOption(windowID, optErrorAt),
 		Count:    windowIntOption(windowID, optRetryCount),
 		NextAt:   windowTimeOption(windowID, optRetryNextAt),
@@ -313,7 +211,9 @@ func reconcileClaudeErrorRetry(windowID, aiPane string, meta claudeSessionMeta) 
 	case retrySchedule:
 		setWindowTimeOption(windowID, optRetryNextAt, plan.NextAt)
 	case retryFire:
-		sendClaudeRetry(aiPane)
+		// Bracketed-paste path (see pasteAndSubmit) so the submit isn't dropped
+		// as a newline on slower machines.
+		_ = pasteAndSubmit(aiPane, policy.Message, true)
 		setWindowIntOption(windowID, optRetryCount, plan.NewCount)
 		if plan.NextAt.IsZero() {
 			unsetWindowOption(windowID, optRetryNextAt)
@@ -321,13 +221,6 @@ func reconcileClaudeErrorRetry(windowID, aiPane string, meta claudeSessionMeta) 
 			setWindowTimeOption(windowID, optRetryNextAt, plan.NextAt)
 		}
 	}
-}
-
-// sendClaudeRetry injects the continuation message + Enter into the agent pane.
-// Uses the bracketed-paste path (see pasteAndSubmit) so the submit isn't dropped
-// as a newline on slower machines.
-func sendClaudeRetry(aiPane string) {
-	_ = pasteAndSubmit(aiPane, claudeRetryMessage, true)
 }
 
 // isBusyStatus reports a turn in progress. "shell" is NOT busy: the turn has

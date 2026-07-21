@@ -86,8 +86,8 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 	if grokPID == 0 {
 		return agentclient.LiveSession{}, false
 	}
-	entries, err := a.loadActive()
-	if err != nil {
+	entries, ok := a.activeEntries(idx)
+	if !ok {
 		return agentclient.LiveSession{}, false
 	}
 	var ent *activeEntry
@@ -109,12 +109,15 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 	title, model := readSummary(filepath.Join(sessionDir, "summary.json"))
 	status := statusFromEvents(filepath.Join(sessionDir, "events.jsonl"))
 	return agentclient.LiveSession{
-		Client:     clientID,
-		Title:      title,
-		Model:      model,
-		Status:     status,
-		SessionKey: ent.SessionID,
-		PID:        grokPID,
+		Client:       clientID,
+		Title:        title,
+		PersistTitle: title,
+		Model:        model,
+		Status:       status,
+		SessionKey:   ent.SessionID,
+		PID:          grokPID,
+		CWD:          ent.CWD,
+		SourcePath:   sessionDir,
 	}, true
 }
 
@@ -129,6 +132,20 @@ func (a *Adapter) loadActive() ([]activeEntry, error) {
 		return nil, err
 	}
 	return entries, nil
+}
+
+// activeEntries caches the active_sessions.json load for one sync pass.
+func (a *Adapter) activeEntries(idx *agentclient.Index) ([]activeEntry, bool) {
+	type cached struct {
+		entries []activeEntry
+		ok      bool
+	}
+	v := idx.Memo("grok.active", func() any {
+		entries, err := a.loadActive()
+		return cached{entries: entries, ok: err == nil}
+	})
+	c, _ := v.(cached)
+	return c.entries, c.ok
 }
 
 func (a *Adapter) sessionDir(home string, ent *activeEntry) (string, bool) {
@@ -301,33 +318,8 @@ func statusFromEvents(path string) string {
 	return agentclient.StatusUnknown
 }
 
-func (a *Adapter) WatchHints() []agentclient.WatchSource {
-	// Default poll-only per design (no events.jsonl watch).
-	return nil
-}
-
-func (a *Adapter) ResumeArgv(sessionKey string) []string {
-	if strings.TrimSpace(sessionKey) == "" {
-		return []string{"grok", "--resume"}
-	}
-	// reject obvious injection
-	if strings.ContainsAny(sessionKey, " \t\n\r\"'`#$") {
-		return []string{"grok", "--resume"}
-	}
-	return []string{"grok", "--resume", sessionKey}
-}
-
-func (a *Adapter) RetryPolicy() agentclient.RetryPolicy {
-	return agentclient.RetryPolicy{Enabled: false}
-}
-
 func Register() {
 	agentclient.RegisterDefault(&Adapter{})
 }
 
-var (
-	_ agentclient.Adapter       = (*Adapter)(nil)
-	_ agentclient.WatchHinter   = (*Adapter)(nil)
-	_ agentclient.ResumeArgver  = (*Adapter)(nil)
-	_ agentclient.RetryPolicier = (*Adapter)(nil)
-)
+var _ agentclient.Adapter = (*Adapter)(nil)

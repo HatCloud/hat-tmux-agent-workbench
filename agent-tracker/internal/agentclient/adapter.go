@@ -31,11 +31,6 @@ type WatchHinter interface {
 	WatchHints() []WatchSource
 }
 
-// ResumeArgver is optional: argv for workspace restore prefill (no Enter).
-type ResumeArgver interface {
-	ResumeArgv(sessionKey string) []string
-}
-
 // RetryPolicy describes whether auto-retry may inject a continue message.
 type RetryPolicy struct {
 	Enabled bool

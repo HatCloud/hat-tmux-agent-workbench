@@ -119,9 +119,3 @@ func TestDetect_HeadlessRejected(t *testing.T) {
 	}
 }
 
-func TestRetryOff(t *testing.T) {
-	a := &Adapter{}
-	if a.RetryPolicy().Enabled {
-		t.Fatal("retry must be off")
-	}
-}

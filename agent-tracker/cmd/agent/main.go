@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/paths"
 )
 
@@ -732,12 +733,17 @@ func splitSessionLabel(name string) (string, string) {
 // @agent_provider window options plus the project (git root / pane path) and
 // session name. No-op when @agent_client is unset (non-agent windows).
 func applyOnFocusRename(sessionID, windowID, paneID string) {
-	ci := buildClaudeIndex()
-	aiPane := agentAIPane(windowID, &ci)
+	acIdx := agentclient.BuildIndex()
+	aiPane := agentAIPane(windowID, acIdx)
 	if aiPane == "" {
 		aiPane = paneID
 	}
-	name := agentWindowName(windowID, sessionID, aiPane, &ci, nil)
+	var live *agentclient.LiveSession
+	if l, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(aiPane),
+		tmuxWindowOption(windowID, "@agent_client")); ok {
+		live = &l
+	}
+	name := agentWindowName(windowID, sessionID, aiPane, live)
 	if name == "" {
 		return
 	}
@@ -914,12 +920,6 @@ func runCommandOutput(timeout time.Duration, name string, args ...string) ([]byt
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-func runCommandCombinedOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
-}
-
 // configWriteMu serializes writers in this process; the mkdir lock below
 // serializes across processes (e.g. the Go tracker and the bash setup wizard).
 var configWriteMu sync.Mutex
@@ -1023,4 +1023,12 @@ func updateAppConfig(update func(*appConfig)) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func homeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		home = os.Getenv("HOME")
+	}
+	return home
 }

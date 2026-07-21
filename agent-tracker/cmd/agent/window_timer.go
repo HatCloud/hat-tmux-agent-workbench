@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/david/agent-tracker/internal/agentclient"
 	"github.com/david/agent-tracker/internal/paths"
 )
 
@@ -699,7 +700,7 @@ func findAIPaneForWindow(windowID string) string {
 // fireTimer sends the timer's content to the window's AI pane. A usage-limit
 // dialog left on screen (e.g. the quota-reset trigger firing after the limit
 // lifted) would swallow the keys, so it is dismissed first.
-func fireTimer(t *windowTimer, ci *claudeIndex) error {
+func fireTimer(t *windowTimer, acIdx *agentclient.Index) error {
 	paneID := findAIPaneForWindow(t.WindowID)
 	if paneID == "" {
 		return fmt.Errorf("no pane found for window %s", t.WindowID)
@@ -708,7 +709,7 @@ func fireTimer(t *windowTimer, ci *claudeIndex) error {
 	// screen and no agent is mid-turn (see shouldDismissUsageDialog). When it does
 	// Escape it waits ~500ms so the box tears down before the content lands; the
 	// normal no-dialog case sends nothing here and just injects content+Enter.
-	dismissUsageLimitDialog(paneID, ci)
+	dismissUsageLimitDialog(paneID, acIdx)
 	return pasteAndSubmit(paneID, t.Content, t.SendEnter)
 }
 
@@ -790,10 +791,10 @@ func reconcileTimerOwnershipLive(store *windowTimerStore) bool {
 }
 
 // checkAndFireTimers checks all timers and fires any that are due.
-// Called from the main sync loop every ~1 second; ci is that pass's shared
+// Called from the main sync loop every ~1 second; acIdx is that pass's shared
 // index (nil for one-shot callers).
 // Mutates and persists the timer store if any timers fire or are updated.
-func checkAndFireTimers(ci *claudeIndex) {
+func checkAndFireTimers(acIdx *agentclient.Index) {
 	release := acquireTimerLock()
 	defer release()
 	store := loadWindowTimerStore()
@@ -852,7 +853,7 @@ func checkAndFireTimers(ci *claudeIndex) {
 		// Fire the timer. A failure (pane vanished mid-tick, tmux timeout) still
 		// advances the schedule — retrying stale content into a changed pane is
 		// worse than skipping — but is logged so silent no-shows are traceable.
-		if err := fireTimer(t, ci); err != nil {
+		if err := fireTimer(t, acIdx); err != nil {
 			fmt.Fprintf(os.Stderr, "agent: timer %s (window %s) fire failed: %v\n", t.ID, t.WindowID, err)
 		}
 		t.ExecutionCount++

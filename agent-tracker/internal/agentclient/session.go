@@ -29,13 +29,24 @@ type TurnError struct {
 // LiveSession is the normalized snapshot consumers use. Status==unknown must
 // not drive finish_task / completion notifications.
 type LiveSession struct {
-	Client       string
-	Provider     string
-	Model        string
-	Title        string
+	Client   string
+	Provider string
+	Model    string
+	Title    string
+	// PersistTitle is what the orchestrator may write into the window's
+	// @agent_title option. Claude sets it only for a user-set session name —
+	// persisting the auto ai-title would overwrite a typed `prefix ]` title and
+	// outlive the session. Codex/Grok persist their (auto) titles, matching the
+	// pre-adapter behavior.
+	PersistTitle string
 	Status       string
 	LimitResetAt *time.Time
 	Error        *TurnError
 	SessionKey   string
 	PID          int
+	CWD          string
+	// SourcePath is the adapter's primary on-disk transcript for this session
+	// (Claude: project JSONL; Codex: rollout JSONL; Grok: session dir), used by
+	// FirstPrompter / QuotaProvider without re-deriving it.
+	SourcePath string
 }

@@ -36,15 +36,25 @@ func (a *Adapter) sessionsDir() string {
 	return filepath.Join(a.home(), ".claude", "sessions")
 }
 
+// sessionMeta mirrors ~/.claude/sessions/<pid>.json.
 type sessionMeta struct {
-	PID        int    `json:"pid"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	SessionID  string `json:"sessionId"`
-	CWD        string `json:"cwd"`
+	PID       int    `json:"pid"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	SessionID string `json:"sessionId"`
+	CWD       string `json:"cwd"`
+	// Entrypoint distinguishes the interactive TUI ("cli") from headless runs
+	// ("sdk-cli" for `claude -p`); kind is "interactive" for BOTH, so this is
+	// the only usable discriminator.
 	Entrypoint string `json:"entrypoint"`
 }
 
+// isWindowAgentSession reports whether a session should drive window features
+// (naming, status prefix, task tracking, auto-retry). Only the interactive TUI
+// qualifies: headless `claude -p` children (e.g. agent-hl workers spawned under
+// a pane) also write session files, and matching them via the pane process tree
+// used to hijack the window's state. Empty entrypoint is accepted for older
+// Claude versions that predate the field.
 func isWindowAgentSession(meta sessionMeta) bool {
 	return meta.Entrypoint == "" || meta.Entrypoint == "cli"
 }
@@ -73,7 +83,7 @@ func (a *Adapter) loadByPID() map[int]sessionMeta {
 		}
 		meta.Name = strings.TrimSpace(meta.Name)
 		if !isWindowAgentSession(meta) {
-			continue
+			continue // headless (sdk-cli) sessions must not drive window state
 		}
 		if meta.PID == 0 {
 			meta.PID = pid
@@ -83,43 +93,11 @@ func (a *Adapter) loadByPID() map[int]sessionMeta {
 	return out
 }
 
-// Detect finds a Claude session in the pane process tree.
-func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveSession, bool) {
-	if idx == nil || panePID <= 0 {
-		return agentclient.LiveSession{}, false
-	}
-	byPID := a.loadByPID()
-	for _, pid := range idx.WalkSubtree(panePID) {
-		meta, ok := byPID[pid]
-		if !ok {
-			continue
-		}
-		// Live process check: pid must appear in index commands (or be pane root).
-		if _, known := idx.Commands[pid]; !known && pid != panePID {
-			// Still accept if session file names this pid — process may be short-lived in index race.
-		}
-		status := strings.TrimSpace(meta.Status)
-		if status == "" {
-			status = agentclient.StatusIdle
-		}
-		s := agentclient.LiveSession{
-			Client:     clientID,
-			Title:      meta.Name,
-			Status:     status,
-			SessionKey: meta.SessionID,
-			PID:        pid,
-		}
-		if m, t := a.modelAndTitleFromJSONL(meta); m != "" || t != "" {
-			if m != "" {
-				s.Model = m
-			}
-			if s.Title == "" && t != "" {
-				s.Title = t
-			}
-		}
-		return s, true
-	}
-	return agentclient.LiveSession{}, false
+// sessionsByPID caches the sessions-dir load for one sync pass.
+func (a *Adapter) sessionsByPID(idx *agentclient.Index) map[int]sessionMeta {
+	v := idx.Memo("claude.sessions", func() any { return a.loadByPID() })
+	m, _ := v.(map[int]sessionMeta)
+	return m
 }
 
 func (a *Adapter) jsonlPath(meta sessionMeta) string {
@@ -130,83 +108,100 @@ func (a *Adapter) jsonlPath(meta sessionMeta) string {
 	return filepath.Join(a.home(), ".claude", "projects", slug, meta.SessionID+".jsonl")
 }
 
-func (a *Adapter) modelAndTitleFromJSONL(meta sessionMeta) (model, aiTitle string) {
-	path := a.jsonlPath(meta)
-	if path == "" {
-		return "", ""
+// Detect finds a Claude session in the pane process tree and returns the full
+// normalized snapshot: title (user-set name → latest ai-title), live model
+// (JSONL tail → --model arg → provider env), provider, and the limited ([L]) /
+// error ([E]) overlays with their reset/retry payloads.
+func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveSession, bool) {
+	if idx == nil || panePID <= 0 {
+		return agentclient.LiveSession{}, false
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", ""
+	byPID := a.sessionsByPID(idx)
+	if len(byPID) == 0 {
+		return agentclient.LiveSession{}, false
 	}
-	defer f.Close()
-	// Tail ~256KB like existing liveModelFromSession.
-	const tail = 256 << 10
-	info, err := f.Stat()
-	if err != nil {
-		return "", ""
-	}
-	start := int64(0)
-	if info.Size() > tail {
-		start = info.Size() - tail
-	}
-	if start > 0 {
-		if _, err := f.Seek(start, 0); err != nil {
-			return "", ""
-		}
-	}
-	buf := make([]byte, info.Size()-start)
-	n, _ := f.Read(buf)
-	buf = buf[:n]
-	// Skip partial first line when tailed.
-	if start > 0 {
-		if i := strings.IndexByte(string(buf), '\n'); i >= 0 {
-			buf = buf[i+1:]
-		}
-	}
-	for _, line := range strings.Split(string(buf), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for _, pid := range idx.WalkSubtree(panePID) {
+		meta, ok := byPID[pid]
+		if !ok {
 			continue
 		}
-		var raw map[string]json.RawMessage
-		if json.Unmarshal([]byte(line), &raw) != nil {
-			continue
+		status := strings.TrimSpace(meta.Status)
+		if status == "" {
+			status = agentclient.StatusIdle
 		}
-		var typ string
-		_ = json.Unmarshal(raw["type"], &typ)
-		if typ == "assistant" {
-			var msg struct {
-				Message struct {
-					Model string `json:"model"`
-				} `json:"message"`
-			}
-			if json.Unmarshal([]byte(line), &msg) == nil && msg.Message.Model != "" {
-				model = msg.Message.Model
+		jsonl := a.jsonlPath(meta)
+		s := agentclient.LiveSession{
+			Client:       clientID,
+			Title:        meta.Name,
+			PersistTitle: meta.Name,
+			Status:       status,
+			SessionKey:   meta.SessionID,
+			PID:          pid,
+			CWD:          meta.CWD,
+			SourcePath:   jsonl,
+		}
+		// Model + ai-title in one bounded read; the full-scan fallback only
+		// triggers while data is actually missing from the tail.
+		model, aiTitle := probeSessionJSONL(jsonl, meta.Name == "")
+		if s.Title == "" && aiTitle != "" {
+			s.Title = aiTitle
+		}
+		s.Provider = a.providerForPID(idx, pid)
+		switch {
+		case model != "":
+			s.Model = model
+		default:
+			// No assistant message yet: fall back to the launch-time --model arg,
+			// then to the provider env's ANTHROPIC_MODEL (e.g. minimax).
+			if m := modelFromArgs(idx.CommandFor(pid)); m != "" {
+				s.Model = m
+			} else if m := a.modelFromProviderEnv(s.Provider); m != "" {
+				s.Model = m
 			}
 		}
-		if typ == "ai-title" || typ == "title" {
-			var t struct {
-				Title string `json:"title"`
-				Name  string `json:"name"`
-			}
-			if json.Unmarshal([]byte(line), &t) == nil {
-				if t.Title != "" {
-					aiTitle = t.Title
-				} else if t.Name != "" {
-					aiTitle = t.Name
+		now := time.Now()
+		// A session whose latest turn died on a usage-limit 429 is its own
+		// "limited" status ([L]): the dialog blocks input and no timer/idle
+		// semantics apply. Only probed while not busy.
+		if !strings.EqualFold(s.Status, agentclient.StatusBusy) {
+			if resetAt, ok := limitResetFromJSONL(jsonl, now); ok {
+				s.Status = agentclient.StatusLimited
+				s.LimitResetAt = &resetAt
+			} else if terr, ok := turnErrorFromJSONL(jsonl); ok {
+				// A turn that stopped on an API error (5xx/529, auth, …) is the
+				// "error" status ([E]); Retryable gates the auto-retry engine.
+				s.Status = agentclient.StatusError
+				s.Error = &agentclient.TurnError{
+					Type:      terr.Type,
+					Status:    terr.Status,
+					At:        terr.At,
+					Retryable: terr.retryable(),
 				}
 			}
 		}
+		return s, true
 	}
-	return model, aiTitle
+	return agentclient.LiveSession{}, false
 }
 
-// FirstPrompt returns the first user message text when available.
+// FirstPrompt returns the first user message text of the session transcript.
 func (a *Adapter) FirstPrompt(s agentclient.LiveSession) string {
-	// Minimal: reopen session meta via SessionKey is insufficient without cwd;
-	// consumers may still use legacy path until full migrate.
-	return ""
+	return firstPromptFromJSONL(s.SourcePath)
+}
+
+// QuotaReset resolves when the usage window resets: exact from an unresolved
+// 429 stamp in the session JSONL, else estimated from the statusline
+// rate-limits cache (exact=false → caller keeps the timer upgrade-eligible).
+func (a *Adapter) QuotaReset(s agentclient.LiveSession, now time.Time) (time.Time, bool, bool) {
+	if s.SourcePath != "" {
+		if at, ok := limitResetFromJSONL(s.SourcePath, now); ok {
+			return at, true, true
+		}
+	}
+	if at, ok := fallbackResetAt(now); ok {
+		return at, false, true
+	}
+	return time.Time{}, false, false
 }
 
 // WatchHints for daemon fsnotify (Claude sessions dir + status field dedupe).
@@ -215,14 +210,6 @@ func (a *Adapter) WatchHints() []agentclient.WatchSource {
 		Path:              a.sessionsDir(),
 		StatusFieldDedupe: "status",
 	}}
-}
-
-// ResumeArgv for workspace restore.
-func (a *Adapter) ResumeArgv(sessionKey string) []string {
-	if strings.TrimSpace(sessionKey) == "" {
-		return []string{"claude", "--resume"}
-	}
-	return []string{"claude", "--resume", sessionKey}
 }
 
 // RetryPolicy enables Claude auto-retry inject.
@@ -238,13 +225,10 @@ func Register() {
 	agentclient.RegisterDefault(&Adapter{})
 }
 
-// Ensure interface compliance.
 var (
-	_ agentclient.Adapter      = (*Adapter)(nil)
-	_ agentclient.WatchHinter  = (*Adapter)(nil)
-	_ agentclient.ResumeArgver = (*Adapter)(nil)
+	_ agentclient.Adapter       = (*Adapter)(nil)
+	_ agentclient.WatchHinter   = (*Adapter)(nil)
 	_ agentclient.RetryPolicier = (*Adapter)(nil)
+	_ agentclient.FirstPrompter = (*Adapter)(nil)
+	_ agentclient.QuotaProvider = (*Adapter)(nil)
 )
-
-// IdleSince is unused helper placeholder for future quota.
-var _ = time.Time{}
