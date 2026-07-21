@@ -48,6 +48,10 @@ type appConfig struct {
 	AutoRetry *bool `json:"auto_retry,omitempty"`
 	// AutoRetryMax: 同一错误连续自动重试的次数上限（默认 3）。达到上限停手、留 [E]。
 	AutoRetryMax int `json:"auto_retry_max,omitempty"`
+	// BusyShellPatterns: 后台 shell 名单——pane 进程子树命令行命中任一模式（大小写不敏感
+	// 子串）的会话，即便 turn 结束落成 shell/idle 也改判 busy（[B]）。指针三态：nil/缺省→
+	// 用内置默认（agent-hl 启动器）；非空数组→完全替换默认；显式空数组 []→彻底关闭本特性。
+	BusyShellPatterns *[]string `json:"busy_shell_patterns,omitempty"`
 }
 
 // autoRetrySetting reports whether auto-retry on a recoverable agent error is

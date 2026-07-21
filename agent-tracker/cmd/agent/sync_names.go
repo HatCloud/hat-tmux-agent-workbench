@@ -128,6 +128,9 @@ func runTmuxSyncNames(args []string) error {
 	// One process Index for all adapters this pass (one ps; per-adapter sidecars
 	// — Claude sessions dir, Codex lsof batch — load lazily and memoize on it).
 	acIdx := agentclient.BuildIndex()
+	// Publish the busy-shell allowlist into the Index SideCar so the claude
+	// adapter can upgrade shell/idle→busy for allowlisted background tasks.
+	injectBusyShellPatterns(acIdx, loadAppConfig())
 	// Daemon task status per pane, to drive the 🔔 (completed-unread) icon from
 	// the live agent busy/idle status.
 	taskByPane := map[string]string{}

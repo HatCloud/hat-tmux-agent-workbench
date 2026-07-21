@@ -120,7 +120,8 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 	if len(byPID) == 0 {
 		return agentclient.LiveSession{}, false
 	}
-	for _, pid := range idx.WalkSubtree(panePID) {
+	subtree := idx.WalkSubtree(panePID)
+	for _, pid := range subtree {
 		meta, ok := byPID[pid]
 		if !ok {
 			continue
@@ -179,6 +180,13 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 				}
 			}
 		}
+		// Busy-shell allowlist: a turn that ended into shell/idle but whose pane
+		// subtree still runs an allowlisted background task (default: agent-hl
+		// launchers) reads as busy ([B]) instead of idle. Applied AFTER the
+		// limited/error overlay and only while still shell/idle, so the precedence
+		// stays error > limited > bg-busy > idle. Patterns come from the SideCar
+		// (orchestrator-injected config) or the built-in default.
+		s.Status = resolveBusyShell(s.Status, subtreeCommands(idx, subtree), busyShellPatternsFromIndex(idx))
 		return s, true
 	}
 	return agentclient.LiveSession{}, false
