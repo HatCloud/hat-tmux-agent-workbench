@@ -9,8 +9,9 @@
 > however you like.
 
 A personal tmux workflow for driving AI coding agents (Claude Code, Codex, and
-custom providers) from the terminal. It gives each agent a three-pane window
-(agent / git / run), auto-names and status-tracks those windows from a small Go
+custom providers) from the terminal. It gives each agent a two-pane window by
+default (agent / git, with an optional third run pane), auto-names and
+status-tracks those windows from a small Go
 daemon, surfaces ⏳/🔔 task state and desktop notifications in the tmux status
 bar, and can snapshot/restore whole workspaces after a crash.
 

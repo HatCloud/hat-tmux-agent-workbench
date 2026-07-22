@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 按清单重建 tmux workspace 结构（session/window + 三格布局）。
+# 按清单重建 tmux workspace 结构（session/window + 当前默认 2/3-pane 布局）。
 # 不重启 Claude agent —— agent 由用户在 ai 格手动 `agent -r` 续。
 #
 # 用法：restore_workspace.sh [manifest]
@@ -48,8 +48,8 @@ scratch_session_name="tmux-agent-restore-$$"
 tmux rename-session -t "$current_session_id" "$scratch_session_name"
 
 # 用真实 client 尺寸建新 session（缺省回退 200x50）。否则 detached session 默认
-# 80x24，三格在小尺寸切好后一旦 attach 被 resize，tmux 把多出来的列全塞给 ai pane，
-# 比例失衡触发 daemon 反复 reflow（可见闪烁）。建对尺寸 → 无纠正性 reflow。
+# 80x24，布局在小尺寸切好后一旦 attach 被 resize，tmux 会把多出来的列集中给某个 pane。
+# 用真实尺寸可让恢复后的初始比例直接符合配置；后台不会再纠正同朝向的手动比例。
 client_w="$(tmux display-message -p '#{client_width}' 2>/dev/null || true)"
 client_h="$(tmux display-message -p '#{client_height}' 2>/dev/null || true)"
 [[ "$client_w" =~ ^[0-9]+$ && "$client_w" -gt 0 ]] || client_w=200

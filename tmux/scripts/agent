@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent — launch an AI coding client in a 3-pane (ai/git/run) tmux layout.
+# agent — launch an AI coding client in a configurable ai/git[/run] tmux layout.
 #
 # Outside tmux: creates a new session and attaches.
 # Inside tmux:  opens a new window in the current session.
@@ -144,11 +144,11 @@ _main_repo_dir() {
   fi
 }
 
-# Build the ai/git/run layout in $win (a window id with a single pane) and start
+# Build the configured ai/git[/run] layout in $win (a window id with a single pane) and start
 # the client in the ai pane. Window @agent_* vars feed the on-focus rename.
 build_layout() {
   local win="$1" ai_pane
-  # 三格 ai/git/run 切分 + lazygit + @agent_pane_role 由 build_agent_layout.sh
+  # 2/3-pane 切分 + lazygit + @agent_pane_role 由 build_agent_layout.sh
   # 统一负责（与 new_agent_window.sh / restore_workspace.sh 共用，唯一真相）。
   "$(dirname "${BASH_SOURCE[0]}")/build_agent_layout.sh" "$win" "$cwd"
   ai_pane="$(tmux list-panes -t "$win" -F '#{pane_id}' | head -1)"

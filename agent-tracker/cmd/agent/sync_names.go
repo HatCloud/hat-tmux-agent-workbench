@@ -178,8 +178,8 @@ func runTmuxSyncNames(args []string) error {
 		// which windows mirror a remote machine and where to read its tracker state.
 		reconcileSSHHost(windowID)
 		if aiPane != "" {
-			// Keep the ai/git/run layout matching its configured orientation.
-			// Yield while a reflow-focus debounce is in flight, so the 1s poll
+			// Reflow ai/git[/run] only when auto-resize is enabled and orientation changes.
+			// Yield while a reflow-focus debounce is in flight, so the periodic sync
 			// doesn't reflow a mid-resize layout the debounced winner will redo.
 			if !reflowDebouncePending(windowID) {
 				reconcileWindowOrientation(windowID)

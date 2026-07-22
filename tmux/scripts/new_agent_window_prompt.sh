@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# prefix [ 入口（及 prefix ] 的 OFF 直建路径）：在指定目录新建三 pane agent 窗口。
+# prefix [ 入口（及 prefix ] 的 OFF 直建路径）：按设置在指定目录新建 2/3-pane agent 窗口。
 #   mode=here：直接用当前目录建，无任何输入（prefix ]，New agent prompt=OFF）。
 #   mode=ask ：在 display-popup 里用 fzf 从 z 的目录历史（~/.z）里选：
 #              输入关键字即过滤（frecency 排序，常用目录在前），Enter/Tab 选中高亮项；

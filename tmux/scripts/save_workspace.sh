@@ -46,7 +46,7 @@ lowest_pane() {
   tmux list-panes -t "$1" -F '#{pane_index} #{pane_id}' | sort -n | awk 'NR==1{print $2}'
 }
 
-# 探测三格朝向：第二个 pane 在 ai pane 右侧→landscape，下方→portrait
+# 探测 2/3-pane 主朝向：ai 之外首个 pane 在其右侧→landscape，下方→portrait。
 detect_layout() {
   local win="$1" ai_pane other_pane ai_left ai_top o_left o_top
   ai_pane="$(lowest_pane "$win")"

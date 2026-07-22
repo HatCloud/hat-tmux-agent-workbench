@@ -3,7 +3,7 @@ set -euo pipefail
 
 path="${1:-$PWD}"
 title="${2:-}"  # 可选窗口标题；空 → 完全交给 agent-tracker 自动命名
-mode="${3:-}"   # 空 → build_agent_layout 取 General 设置的默认布局
+mode="${3:-}"   # 空 → build_agent_layout 取 Window & Resize 设置
 
 if [[ -z "$path" ]]; then
   path="$PWD"

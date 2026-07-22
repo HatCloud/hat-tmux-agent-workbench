@@ -8,10 +8,10 @@ tmux 基础见 [GUIDE_TMUX.md](./GUIDE_TMUX.md)，整体工作流见 [GUIDE.md](
 
 ## 1. 本项目中的定位
 
-本项目创建的三 pane AI 工作窗口（`prefix A` / `prefix S`）会在 `git` pane 中自动启动 LazyGit：
+本项目创建的 AI 工作窗口（默认两 pane，可选第三个 run pane）会在 `git` pane 中自动启动 LazyGit：
 
 ```bash
-lazygit --screen-mode half
+lazygit
 ```
 
 如果当前环境没有安装 LazyGit，回退到：
@@ -20,13 +20,18 @@ lazygit --screen-mode half
 git status --short --branch
 ```
 
-`--screen-mode` 是 LazyGit 的初始视图模式，可选值：
+启动命令不附加参数。本机配置固定使用标准布局，并禁用按窗口尺寸自动切换 portrait 布局：
 
-- `normal`：默认模式，三面板并排。
-- `half`：让当前 focus 面板更宽，适合竖屏或窄窗口。
-- `full`：整个 terminal 都给 LazyGit。
+```yaml
+gui:
+  screenMode: normal
+  portraitMode: never
+  expandFocusedSidePanel: true
+  expandedSidePanelWeight: 8
+```
 
-竖屏三 pane 布局里默认用 `half`，让 focus panel 不至于被压得太扁。如果仍然觉得挤，可以把脚本里改成 `full`，或者为这套工作流单独写一份 LazyGit 配置。
+左侧使用手风琴布局：当前聚焦的 panel 获得主要高度。默认聚焦 Files 时，
+Local branches 和 Commits 各保留约两行内容；切换到它们时，对应 panel 会临时展开。
 
 ## 2. 启动
 
@@ -484,7 +489,7 @@ command -v lazygit
 如果输出为空，tmux git pane 会回退到 `git status --short --branch`，不会报错。手动启动：
 
 ```bash
-lazygit --screen-mode half
+lazygit
 ```
 
 或修改 tmux 脚本里启动命令，让它使用绝对路径。

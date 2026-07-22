@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tmux status line 位置。General 设置 status_position 决定策略：
+# tmux status line 位置。Window & Resize 设置 status_position 决定策略：
 #   top / bottom → 固定到该位置（显式设置，完全尊重——嵌套 ssh 错位靠 per-machine
 #                  固定值实现：外层机固定 bottom、内层机固定 top，两层天然错开）。
 #   auto（默认）  → 跟随当前 active window 的 agent 布局朝向：

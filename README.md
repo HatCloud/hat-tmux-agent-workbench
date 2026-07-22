@@ -7,7 +7,8 @@
 > 采用 MIT 协议，可以随意修改。
 
 面向终端的个人 tmux 工作流，用来驱动 AI 编码 agent（Claude Code、Codex、Grok Build
-及自定义 provider）：为每个 agent 开一个三 pane 窗口（agent / git / run），由一个小型 Go
+及自定义 provider）：默认给每个 agent 开一个两 pane 窗口（agent / git，也可在设置中启用
+第三个 run pane），由一个小型 Go
 daemon 自动命名并追踪这些窗口的状态，在 tmux 状态栏呈现 ⏳/🔔 任务状态与桌面通知，
 还能在崩溃后快照 / 恢复整个 workspace。Client 探测经 `internal/agentclient` Adapter
 注册表；没有人工 Session Name 的新会话可由 Codex Luna（DeepSeek Flash fallback）生成短名：Claude/Codex 通过 adapter 写回原生名称，Grok 在尚无可靠外部 rename API 时保存 tracker 别名。窗口名按「原生 Session Name > tmux 自定义名 > tracker 生成名 > agent 默认标题」仲裁（见 `docs/ARCHITECTURE.md`「Agent Adapter」）。
