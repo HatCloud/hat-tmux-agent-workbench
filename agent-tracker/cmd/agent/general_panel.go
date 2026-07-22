@@ -33,6 +33,7 @@ const (
 	generalOptionURLPickerDirs  = "url_picker_dirs"
 	generalOptionAutoRetry      = "auto_retry"
 	generalOptionAutoRetryMax   = "auto_retry_max"
+	generalOptionAutoName       = "auto_name"
 )
 
 type generalEntry struct {
@@ -143,6 +144,12 @@ func (m *generalPanelModel) reload() {
 			Title:    "URL picker folders",
 			Subtitle: "Include existing directories in `prefix u` results",
 			Enabled:  urlPickerDirsSetting(cfg),
+		},
+		{
+			Key:      generalOptionAutoName,
+			Title:    "Auto-name sessions",
+			Subtitle: "Generate a short name from the first prompt (Luna, then DeepSeek Flash)",
+			Enabled:  autoNameSetting(cfg),
 		},
 		{
 			Key:      generalOptionAutoRetry,
@@ -394,6 +401,11 @@ func (m *generalPanelModel) toggleSelected() {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
 			return
 		}
+	case generalOptionAutoName:
+		if err := toggleAutoName(); err != nil {
+			m.setStatus(err.Error(), 1500*time.Millisecond)
+			return
+		}
 	case generalOptionAutoRetryMax:
 		if _, err := cycleAutoRetryMax(); err != nil {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
@@ -547,6 +559,12 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 				stateText = "Recoverable errors are auto-retried with backoff"
 			} else {
 				stateText = "Errors just show [E]; no automatic retry"
+			}
+		case entry.Key == generalOptionAutoName:
+			if entry.Enabled {
+				stateText = "Unnamed sessions get a generated priority-3 name"
+			} else {
+				stateText = "No headless model calls or generated session names"
 			}
 		case entry.Key == generalOptionAutoRetryMax:
 			stateText = "Give up after " + entry.Value + " retries of the same error"

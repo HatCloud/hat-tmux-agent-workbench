@@ -87,15 +87,23 @@ func panePID(paneID string) int {
 // Empty for non-agent windows. live is the registry Detect result for the AI
 // pane (nil when no live agent session) — the caller detects once per window
 // and shares the snapshot with the reconcile path.
-func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveSession) string {
+func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveSession) (string, bool) {
 	client := tmuxWindowOption(windowID, "@agent_client")
 	model := tmuxWindowOption(windowID, "@agent_model")
 	liveTitle := ""
 	liveStatus := ""
+	nativeSessionNameWins := false
 
 	if live != nil {
 		client = live.Client
-		liveTitle = agentTitleForWindow(live.Title)
+		selectedTitle, nativeWins := resolveAgentSessionTitle(windowID, live)
+		nativeSessionNameWins = nativeWins
+		liveTitle = agentTitleForWindow(selectedTitle)
+		if liveTitle != "" && tmuxWindowOption(windowID, optResolvedDisplayTitle) != liveTitle {
+			setWindowOption(windowID, optResolvedDisplayTitle, liveTitle)
+		} else if liveTitle == "" {
+			unsetWindowOption(windowID, optResolvedDisplayTitle)
+		}
 		liveStatus = live.Status
 		if liveStatus == agentclient.StatusUnknown {
 			liveStatus = "" // do not show false [I]; skip finish path via empty/non-idle
@@ -150,6 +158,7 @@ func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveS
 		}
 	} else {
 		// No live claude/codex/grok in this window.
+		unsetWindowOption(windowID, optResolvedDisplayTitle)
 		if client != "" {
 			// Stale agent tags: either the agent exited or the launcher tagged the
 			// window before its process came up. Drop the live-detected
@@ -170,9 +179,9 @@ func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveS
 		// autoRenameWindow keeps manual renames.
 		if marker := sshWindowMarker(windowID); marker != "" {
 			if rs := strings.TrimSpace(tmuxWindowOption(windowID, "@agent_remote_status")); rs != "" {
-				return statusTag(rs) + marker
+				return statusTag(rs) + marker, false
 			}
-			return marker
+			return marker, false
 		}
 		// A pending agent window — its 3-pane layout was built via `prefix ]` with a
 		// typed title (persisted to @agent_title) but the agent process hasn't come
@@ -180,7 +189,7 @@ func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveS
 		// typed title shows immediately instead of the bare shell name ("zsh"); once
 		// claude/codex launches, @agent_client is set and the live title takes over.
 		if client == "" && sanitizeWindowMarker(tmuxWindowOption(windowID, "@agent_title")) == "" {
-			return ""
+			return "", false
 		}
 	}
 
@@ -264,14 +273,9 @@ func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveS
 			strconv.FormatInt(time.Now().Unix(), 10))
 	}
 
-	return assemble(windowNameShowStatus(cfg), windowNameShowPath(cfg), windowNameShowModel(cfg))
+	return assemble(windowNameShowStatus(cfg), windowNameShowPath(cfg), windowNameShowModel(cfg)), nativeSessionNameWins
 }
 
-// autoRenameWindow applies an auto-computed name to windowID while respecting
-// manual renames. We track the last auto-set name in @agent_window_name_auto:
-//   - First call (option unset): always renames and records the name.
-//   - Subsequent calls where current name == @agent_window_name_auto: renames on change.
-//
 // extractStatusPrefix returns the leading agent status prefix from name.
 func extractStatusPrefix(name string) string {
 	return statustag.Prefix(name)
@@ -294,17 +298,99 @@ func stripStatusPrefix(name string) string {
 // hold a stale value (e.g. after workspace restore recreates the window, or
 // a transient poll failure) — see the manual-override guard below.
 const placeholderWindowName = "agent"
+const optManualWindowName = "@agent_manual_window_name"
+const optResolvedDisplayTitle = "@agent_resolved_display_title"
 
+// autoRenameWindow applies an auto-computed name while respecting a manual
+// tmux name. @agent_window_name_auto tracks names written by this process;
+// before the first write, automatic-rename=off distinguishes an explicit name
+// from tmux's command-derived name. A native user Session Name may override
+// either form because it is priority 1.
 func autoRenameWindow(windowID, name string) {
+	autoRenameWindowPriority(windowID, name, false)
+}
+
+func persistResolvedDisplayTitle(windowID, manualTitle string, nativeSessionNameWins bool) {
+	sessionTitle := tmuxWindowOption(windowID, optResolvedDisplayTitle)
+	if sessionTitle == "" {
+		return
+	}
+	title := selectAgentDisplayTitle(sessionTitle, manualTitle, nativeSessionNameWins)
+	if title != sessionTitle {
+		setWindowOption(windowID, optResolvedDisplayTitle, title)
+	}
+}
+
+func manualWindowNameWins(cur, lastAuto string, nativeSessionNameWins, automaticRename bool) bool {
+	cur = strings.TrimSpace(cur)
+	lastAuto = strings.TrimSpace(lastAuto)
+	if nativeSessionNameWins || cur == "" || stripStatusPrefix(cur) == placeholderWindowName {
+		return false
+	}
+	if lastAuto == "" {
+		return !automaticRename
+	}
+	return cur != lastAuto
+}
+
+func rememberedManualWindowName(cur, lastAuto, stored string, automaticRename bool) string {
+	cur = strings.TrimSpace(cur)
+	if cur == "" {
+		return ""
+	}
+	if manualWindowNameWins(cur, lastAuto, false, automaticRename) {
+		if name := strings.TrimSpace(stripStatusPrefix(cur)); name != "" {
+			return name
+		}
+	}
+	return strings.TrimSpace(stored)
+}
+
+func autoRenameWindowPriority(windowID, name string, nativeSessionNameWins bool) {
 	cur, _ := runTmuxOutput("display-message", "-p", "-t", windowID, "#{window_name}")
 	cur = strings.TrimSpace(cur)
 	lastAuto := strings.TrimSpace(tmuxWindowOption(windowID, "@agent_window_name_auto"))
+	manualName := strings.TrimSpace(tmuxWindowOption(windowID, optManualWindowName))
+	automaticRename := true
+	if lastAuto == "" {
+		if value, err := runTmuxOutput("show-options", "-w", "-v", "-t", windowID, "automatic-rename"); err == nil {
+			automaticRename = !strings.EqualFold(strings.TrimSpace(value), "off")
+		}
+	}
+	// Preserve a manual tmux name while a higher-priority native Session Name is
+	// displayed. Otherwise overwriting the window would destroy the priority-2
+	// source, so it could not reappear if the native name is later cleared.
+	remembered := manualName
+	nativeDisplayAlreadyVisible := nativeSessionNameWins && cur != "" &&
+		stripStatusPrefix(cur) == stripStatusPrefix(strings.TrimSpace(name))
+	if !nativeDisplayAlreadyVisible {
+		remembered = rememberedManualWindowName(cur, lastAuto, manualName, automaticRename)
+	}
+	if remembered != manualName {
+		if remembered == "" {
+			unsetWindowOption(windowID, optManualWindowName)
+		} else {
+			setWindowOption(windowID, optManualWindowName, remembered)
+		}
+		manualName = remembered
+	}
+	if !nativeSessionNameWins && manualName != "" {
+		persistResolvedDisplayTitle(windowID, manualName, false)
+		manual := extractStatusPrefix(name) + manualName
+		if manual != cur {
+			_ = runTmux("rename-window", "-t", windowID, manual)
+		}
+		if name == "" && lastAuto != "" {
+			unsetWindowOption(windowID, "@agent_window_name_auto")
+		}
+		return
+	}
 
 	// Manual-override: user renamed the window — keep their base name but still
 	// update the [B]/[I] status prefix so busy/idle is always current. The
 	// placeholder exception keeps a window stuck on "agent" from being
 	// mistaken for a deliberate rename (see placeholderWindowName above).
-	if lastAuto != "" && cur != "" && cur != lastAuto && stripStatusPrefix(cur) != placeholderWindowName {
+	if manualWindowNameWins(cur, lastAuto, nativeSessionNameWins, automaticRename) {
 		// Clear call (name==""): the source that earned the auto-name is gone
 		// (e.g. ssh exited) but the user has their own name. Keep their name, but
 		// drop the tracking option so the poll stops re-entering this path.
@@ -314,6 +400,7 @@ func autoRenameWindow(windowID, name string) {
 		}
 		newStatus := extractStatusPrefix(name)
 		userBase := stripStatusPrefix(cur)
+		persistResolvedDisplayTitle(windowID, userBase, false)
 		newName := newStatus + userBase
 		if newName != cur {
 			_ = runTmux("rename-window", "-t", windowID, newName)

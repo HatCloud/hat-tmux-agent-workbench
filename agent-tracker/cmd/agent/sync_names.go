@@ -159,8 +159,11 @@ func runTmuxSyncNames(args []string) error {
 				live = &l
 			}
 		}
-		if name := agentWindowName(windowID, sessionID, aiPane, live); name != "" {
-			autoRenameWindow(windowID, name)
+		if live != nil {
+			maybeStartAutoName(windowID, aiPane, live)
+		}
+		if name, nativeSessionNameWins := agentWindowName(windowID, sessionID, aiPane, live); name != "" {
+			autoRenameWindowPriority(windowID, name, nativeSessionNameWins)
 		} else if strings.TrimSpace(tmuxWindowOption(windowID, "@agent_window_name_auto")) != "" {
 			// A window we previously auto-named no longer qualifies (e.g. an ssh
 			// session exited, clearing the 🌐 marker). Hand it back to tmux
@@ -198,10 +201,12 @@ func runTmuxSyncNames(args []string) error {
 				}
 			}
 			if live != nil {
-				// Persist the session title so Window Nav can display it without
-				// re-parsing. PersistTitle is adapter-gated: Claude only exposes a
-				// user-set name here (the auto ai-title must not overwrite a typed
-				// `prefix ]` title), Codex/Grok persist their auto titles.
+				// Persist the adapter title as the transient-detection/pending-window
+				// fallback used by agentWindowName. Live Window Nav rows consume the
+				// centrally resolved @agent_resolved_display_title written above.
+				// PersistTitle is adapter-gated: Claude only exposes a user-set name
+				// here (the auto ai-title must not overwrite a typed `prefix ]`
+				// title), Codex/Grok persist their auto titles.
 				if t := agentTitleForWindow(live.PersistTitle); t != "" {
 					setWindowOption(windowID, "@agent_title", t)
 				}

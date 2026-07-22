@@ -5,7 +5,9 @@ import "testing"
 // 字段顺序须与 refresh() 的 list-windows 格式串一致：
 // 0 session_id|1 session_name|2 window_index|3 window_id|4 window_name|
 // 5 window_flags|6 window_activity|7 window_bell_flag|8 pane_current_path|
-// 9 @agent_dir|10 @agent_provider|11 @agent_model|12 @agent_client|13 @agent_title
+// 9 @agent_dir|10 @agent_provider|11 @agent_model|12 @agent_client|
+// 13 @agent_resolved_display_title|14 @agent_last_busy_at|
+// 15 @agent_remote_bell
 func TestParseWindowNavLine(t *testing.T) {
 	// agent 窗口（@agent_client 已设）
 	agent := "$1|main|2|@5|[I] proj/title|*|123|0|/p|p|claude|sonnet|claude|title"
@@ -66,6 +68,29 @@ func TestParseWindowNavLineFields(t *testing.T) {
 				t.Errorf("bell=%v，期望 %v", w.bell, c.wantBell)
 			}
 		})
+	}
+}
+
+func TestParseWindowNavLineUsesResolvedDisplayTitle(t *testing.T) {
+	line := "$1|main|2|@5|[I] proj/old|*|123|0|/p|p||gpt|codex|测试|0|0"
+	row, ok := parseWindowNavLine(line)
+	if !ok {
+		t.Fatal("parseWindowNavLine should accept the resolved display-title field")
+	}
+	if row.resolvedTitle != "测试" {
+		t.Fatalf("resolvedTitle = %q, want centrally resolved display title", row.resolvedTitle)
+	}
+}
+
+func TestWindowNavDisplayTitleUsesSharedResolution(t *testing.T) {
+	row := windowNavRow{
+		isAgent:       true,
+		windowName:    "Hat配置同步规范 (gpt-5.6)",
+		resolvedTitle: "测试",
+		agentModel:    "gpt-5.6",
+	}
+	if got := windowNavDisplayTitle(row); got != "测试" {
+		t.Fatalf("windowNavDisplayTitle = %q, want shared resolved title", got)
 	}
 }
 

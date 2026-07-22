@@ -27,21 +27,20 @@ type windowNavRow struct {
 	sessionName string // header display text or session name for window rows
 	windowCount int    // header only
 
-	windowID       string
-	windowName     string
-	windowIndex    int
-	activity       int64
-	bell           bool // attention flag, shown in its own column (independent of status)
-	path           string
-	status         string // activity: "idle", "busy", "asking", "limited", "error", ""
-	agentDir       string // @agent_dir: abbreviated absolute path
-	agentProvider  string // @agent_provider: official / minimax / … (empty for codex)
-	agentModel     string // @agent_model: sonnet / opus / …
-	agentTitle     string // @agent_title: Claude session title
-	agentClient    string // @agent_client: claude / codex
-	isAgent        bool   // @agent_client is set
-	lastBusyAt     int64  // @agent_last_busy_at: unix ts of last busy tick; 0 if never seen
-	windowNameAuto string // @agent_window_name_auto: last name the auto-renamer wrote (empty => never auto-named)
+	windowID      string
+	windowName    string
+	windowIndex   int
+	activity      int64
+	bell          bool // attention flag, shown in its own column (independent of status)
+	path          string
+	status        string // activity: "idle", "busy", "asking", "limited", "error", ""
+	agentDir      string // @agent_dir: abbreviated absolute path
+	agentProvider string // @agent_provider: official / minimax / … (empty for codex)
+	agentModel    string // @agent_model: sonnet / opus / …
+	resolvedTitle string // @agent_resolved_display_title from the shared naming pipeline
+	agentClient   string // @agent_client: claude / codex
+	isAgent       bool   // @agent_client is set
+	lastBusyAt    int64  // @agent_last_busy_at: unix ts of last busy tick; 0 if never seen
 }
 
 type windowNavPanelModel struct {
@@ -167,7 +166,7 @@ func parseWindowNavLine(line string) (windowNavRow, bool) {
 	if line == "" {
 		return windowNavRow{}, false
 	}
-	parts := strings.SplitN(line, "|", 17)
+	parts := strings.SplitN(line, "|", 16)
 	if len(parts) < 9 {
 		return windowNavRow{}, false
 	}
@@ -197,23 +196,22 @@ func parseWindowNavLine(line string) (windowNavRow, bool) {
 	}
 	idx, _ := strconv.Atoi(parts[2])
 	return windowNavRow{
-		sessionID:      parts[0],
-		sessionName:    parts[1],
-		windowIndex:    idx,
-		windowID:       parts[3],
-		windowName:     stripStatusPrefix(raw),
-		activity:       activity,
-		bell:           nativeBell,
-		path:           parts[8],
-		status:         status,
-		agentDir:       field(9),
-		agentProvider:  field(10),
-		agentModel:     field(11),
-		agentTitle:     field(13),
-		agentClient:    field(12),
-		isAgent:        field(12) != "",
-		lastBusyAt:     lastBusyAt,
-		windowNameAuto: field(16),
+		sessionID:     parts[0],
+		sessionName:   parts[1],
+		windowIndex:   idx,
+		windowID:      parts[3],
+		windowName:    stripStatusPrefix(raw),
+		activity:      activity,
+		bell:          nativeBell,
+		path:          parts[8],
+		status:        status,
+		agentDir:      field(9),
+		agentProvider: field(10),
+		agentModel:    field(11),
+		resolvedTitle: field(13),
+		agentClient:   field(12),
+		isAgent:       field(12) != "",
+		lastBusyAt:    lastBusyAt,
 	}, true
 }
 
@@ -228,7 +226,7 @@ func (m *windowNavPanelModel) refresh() {
 		}
 	}
 	out, err := runTmuxOutput("list-windows", "-a", "-F",
-		"#{session_id}|#{session_name}|#{window_index}|#{window_id}|#{window_name}|#{window_flags}|#{window_activity}|#{window_bell_flag}|#{pane_current_path}|#{@agent_dir}|#{@agent_provider}|#{@agent_model}|#{@agent_client}|#{@agent_title}|#{@agent_last_busy_at}|#{@agent_remote_bell}|#{@agent_window_name_auto}")
+		"#{session_id}|#{session_name}|#{window_index}|#{window_id}|#{window_name}|#{window_flags}|#{window_activity}|#{window_bell_flag}|#{pane_current_path}|#{@agent_dir}|#{@agent_provider}|#{@agent_model}|#{@agent_client}|#{@agent_resolved_display_title}|#{@agent_last_busy_at}|#{@agent_remote_bell}")
 	if err != nil {
 		return
 	}
@@ -683,6 +681,18 @@ func windowLivenessTier(w windowNavRow) int {
 		return 0
 	}
 	return 1
+}
+
+func windowNavDisplayTitle(row windowNavRow) string {
+	if row.isAgent && row.resolvedTitle != "" {
+		return row.resolvedTitle
+	}
+	displayName := row.windowName
+	if row.isAgent && row.agentModel != "" {
+		suffix := " (" + normalizeModelNameLong(row.agentModel) + ")"
+		displayName = strings.TrimSuffix(displayName, suffix)
+	}
+	return displayName
 }
 
 func (m *windowNavPanelModel) sortWindows(wins []windowNavRow) []windowNavRow {
@@ -1538,28 +1548,11 @@ func (m *windowNavPanelModel) renderRow(styles paletteStyles, row windowNavRow, 
 		modelStr = normalizeModelNameLong(row.agentModel)
 	}
 
-	// A manual rename (tmux rename-window, or /rename the daemon reflected onto
-	// window_name) leaves @agent_title holding the stale Claude session title while
-	// the tab shows the user's name. Detect it — the live window_name base no longer
-	// matches what the auto-renamer last wrote (@agent_window_name_auto, which still
-	// carries its [B]/[I] prefix; row.windowName is already prefix-stripped) — and
-	// prefer window_name so Window Nav stays in sync with the tab within a refresh.
-	manualRename := row.windowNameAuto != "" &&
-		row.windowName != stripStatusPrefix(row.windowNameAuto)
-
-	// Build name: prefer agentTitle (no model suffix); fall back to window name with suffix stripped.
-	displayName := row.windowName
-	switch {
-	case manualRename:
-		displayName = row.windowName
-	case row.isAgent && row.agentTitle != "":
-		displayName = row.agentTitle
-	case row.isAgent && row.agentModel != "":
-		suffix := " (" + normalizeModelNameLong(row.agentModel) + ")"
-		displayName = strings.TrimSuffix(row.windowName, suffix)
-	}
+	// The shared naming pipeline has already applied native/manual/generated/default
+	// priority and persisted the final title. Window Nav only formats that result.
+	displayName := windowNavDisplayTitle(row)
 	// Match the tmux tab: drop a leading YYYY-MM-DD- when the setting is on, and
-	// strip control chars / '#' (agentTitle may be a raw user-typed title).
+	// strip control chars / '#' (resolvedTitle may be a raw user-typed title).
 	displayName = maybeStripDatePrefix(sanitizeWindowMarker(displayName), m.stripDatePrefix)
 	// Column widths are responsive: narrow popups drop model/provider/dir/time.
 	const (

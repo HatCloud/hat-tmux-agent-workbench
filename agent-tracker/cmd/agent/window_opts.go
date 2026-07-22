@@ -21,9 +21,12 @@ import "strings"
 var memoedWindowOptions = []string{
 	"@agent_client", "@agent_provider", "@agent_model", "@agent_dir",
 	"@agent_title", "@agent_notify_name", "@agent_window_name_auto",
+	optManualWindowName, optResolvedDisplayTitle,
 	"@agent_orientation", "@agent_orientation_mode",
 	"@agent_ssh_host", "@agent_ssh_border_off", "@agent_remote_status",
 	"@agent_limit_reset_at", "@agent_last_busy_at",
+	optGeneratedName, optGeneratedNameSession, optAutoNameState,
+	optAutoNameAttemptAt, optAutoNameNative,
 	optErrorAt, optErrorType, optRetryCount, optRetryNextAt,
 }
 
