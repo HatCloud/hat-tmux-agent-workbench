@@ -39,6 +39,103 @@ func TestPollIntervalSetting(t *testing.T) {
 	}
 }
 
+func TestLayoutDefaultSetting(t *testing.T) {
+	if got := layoutDefaultSetting(appConfig{}); got != "landscape" {
+		t.Fatalf("default layout = %q, want landscape", got)
+	}
+	if got := layoutDefaultSetting(appConfig{LayoutDefault: "portrait"}); got != "portrait" {
+		t.Fatalf("portrait layout = %q, want portrait", got)
+	}
+	if got := layoutDefaultSetting(appConfig{LayoutDefault: "auto"}); got != "auto" {
+		t.Fatalf("legacy auto layout = %q, want auto", got)
+	}
+	auto := true
+	if got := layoutDefaultSetting(appConfig{LayoutAutoResize: &auto}); got != "auto" {
+		t.Fatalf("auto-resize layout = %q, want auto", got)
+	}
+	auto = false
+	if got := layoutDefaultSetting(appConfig{LayoutDefault: "auto", LayoutAutoResize: &auto}); got != "landscape" {
+		t.Fatalf("explicitly disabled auto-resize layout = %q, want landscape", got)
+	}
+}
+
+func TestWindowResizeSettingsDefaultsAndValidation(t *testing.T) {
+	cfg := appConfig{}
+	if got := layoutOrientationSetting(cfg); got != "landscape" {
+		t.Errorf("default orientation = %q, want landscape", got)
+	}
+	if layoutAutoResizeSetting(cfg) {
+		t.Error("auto resize should default off")
+	}
+	if got := layoutMainPercentSetting(cfg); got != 55 {
+		t.Errorf("default main percent = %d, want 55", got)
+	}
+	if layoutThirdPaneSetting(cfg) {
+		t.Error("third pane should default off")
+	}
+	if got := layoutSideTopPercentSetting(cfg); got != 75 {
+		t.Errorf("default side top percent = %d, want 75", got)
+	}
+
+	if got := layoutMainPercentSetting(appConfig{LayoutMainPercent: 60}); got != 60 {
+		t.Errorf("configured main percent = %d, want 60", got)
+	}
+	if got := layoutMainPercentSetting(appConfig{LayoutMainPercent: 10}); got != 55 {
+		t.Errorf("invalid main percent = %d, want fallback 55", got)
+	}
+	if got := layoutSideTopPercentSetting(appConfig{LayoutSideTopPercent: 70}); got != 70 {
+		t.Errorf("configured side top percent = %d, want 70", got)
+	}
+	if got := layoutSideTopPercentSetting(appConfig{LayoutSideTopPercent: 99}); got != 75 {
+		t.Errorf("invalid side top percent = %d, want fallback 75", got)
+	}
+	third := true
+	if !layoutThirdPaneSetting(appConfig{LayoutThirdPane: &third}) {
+		t.Error("configured third pane should be on")
+	}
+}
+
+func TestPersistLayoutOrientationKeepsLegacyAutoResizeEnabled(t *testing.T) {
+	cfg := appConfig{LayoutDefault: "auto"}
+	persistLayoutOrientation(&cfg, "portrait")
+	if cfg.LayoutDefault != "portrait" {
+		t.Fatalf("layout default = %q, want portrait", cfg.LayoutDefault)
+	}
+	if cfg.LayoutAutoResize == nil || !*cfg.LayoutAutoResize {
+		t.Fatal("choosing an orientation must preserve legacy auto-resize")
+	}
+}
+
+func TestShouldReflowOrientationDoesNotCorrectManualRatio(t *testing.T) {
+	if shouldReflowOrientation(false, "landscape", "portrait") {
+		t.Error("disabled auto-resize must never reflow")
+	}
+	if shouldReflowOrientation(true, "landscape", "landscape") {
+		t.Error("same orientation must not reflow just to correct pane proportions")
+	}
+	if !shouldReflowOrientation(true, "landscape", "portrait") {
+		t.Error("enabled auto-resize should reflow when orientation changes")
+	}
+}
+
+func TestSettingsIncludesWindowResizeCategory(t *testing.T) {
+	panel := newSettingsPanelModel()
+	for _, entry := range panel.entries {
+		if entry.Mode == paletteModeWindowResize {
+			return
+		}
+	}
+	t.Fatal("Settings should include Window & Resize category")
+}
+
+func TestPaletteOpenModeWindowResize(t *testing.T) {
+	for _, name := range []string{"window-resize", "windowresize", "resize"} {
+		if got := paletteOpenModeToState(name); got != paletteModeWindowResize {
+			t.Errorf("paletteOpenModeToState(%q) = %v, want Window & Resize", name, got)
+		}
+	}
+}
+
 func TestStripDatePrefixSetting(t *testing.T) {
 	if !stripDatePrefixSetting(appConfig{}) {
 		t.Error("stripDatePrefixSetting default should be true")

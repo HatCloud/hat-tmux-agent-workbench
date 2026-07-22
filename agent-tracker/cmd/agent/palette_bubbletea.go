@@ -51,6 +51,7 @@ type paletteModel struct {
 	status                  *statusRightPanelModel
 	settings                *settingsPanelModel
 	general                 *generalPanelModel
+	windowResize            *windowResizePanelModel
 	windowTitle             *windowTitlePanelModel
 	windowNav               *windowNavPanelModel
 	snippet                 *snippetPanelModel
@@ -173,6 +174,8 @@ func paletteOpenModeToState(name string) paletteMode {
 		return paletteModeSettings
 	case "general":
 		return paletteModeGeneral
+	case "window-resize", "windowresize", "resize":
+		return paletteModeWindowResize
 	case "window-title", "windowtitle":
 		return paletteModeWindowTitle
 	case "status", "statusright", "status-right":
@@ -200,7 +203,7 @@ func loadPaletteRuntime(args []string) (*paletteRuntime, error) {
 	fs.StringVar(&currentPath, "path", "", "current pane path")
 	fs.StringVar(&currentSessionName, "session-name", "", "current session name")
 	fs.StringVar(&currentWindowName, "window-name", "", "current window name")
-	fs.StringVar(&openMode, "open", "", "open directly to sub-panel: windows, activity, settings, general, window-title, status")
+	fs.StringVar(&openMode, "open", "", "open directly to sub-panel: windows, activity, settings, general, window-resize, window-title, status")
 	fs.SetOutput(nil)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -340,8 +343,8 @@ func (r *paletteRuntime) buildActions() []paletteAction {
 		paletteAction{
 			Section:  "System",
 			Title:    "Settings",
-			Subtitle: "Status bar and window title configuration",
-			Keywords: []string{"settings", "tmux", "status", "bottom", "window", "title", "model", "display"},
+			Subtitle: "General, window/resize, status bar, and title configuration",
+			Keywords: []string{"settings", "tmux", "resize", "layout", "status", "bottom", "window", "title", "model", "display"},
 			Kind:     paletteActionOpenSettings,
 		},
 	)
@@ -436,6 +439,9 @@ func newPaletteModel(runtime *paletteRuntime, state paletteUIState) *paletteMode
 	}
 	if state.Mode == paletteModeGeneral {
 		model.openGeneralPanel()
+	}
+	if state.Mode == paletteModeWindowResize {
+		model.openWindowResizePanel()
 	}
 	return model
 }
@@ -562,6 +568,22 @@ func (m *paletteModel) openGeneralPanel() {
 	m.state.ShowAltHints = false
 }
 
+func (m *paletteModel) openWindowResizePanel() {
+	m.noteSecondaryPageOpen()
+	if m.windowResize == nil {
+		m.windowResize = newWindowResizePanelModel(m.runtime.windowID)
+	} else {
+		m.windowResize.windowID = strings.TrimSpace(m.runtime.windowID)
+		m.windowResize.reload()
+		m.windowResize.requestBack = false
+	}
+	m.windowResize.width = m.width
+	m.windowResize.height = m.height
+	m.state.Mode = paletteModeWindowResize
+	m.state.Message = ""
+	m.state.ShowAltHints = false
+}
+
 func (m *paletteModel) openWindowTitlePanel() {
 	m.noteSecondaryPageOpen()
 	if m.windowTitle == nil {
@@ -622,6 +644,10 @@ func (m *paletteModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.general != nil {
 			m.general.width = msg.Width
 			m.general.height = msg.Height
+		}
+		if m.windowResize != nil {
+			m.windowResize.width = msg.Width
+			m.windowResize.height = msg.Height
 		}
 		if m.windowNav != nil {
 			m.windowNav.width = msg.Width
@@ -730,6 +756,8 @@ func (m *paletteModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch opened {
 				case paletteModeGeneral:
 					m.openGeneralPanel()
+				case paletteModeWindowResize:
+					m.openWindowResizePanel()
 				case paletteModeStatusRight:
 					m.openStatusRightPanel()
 				case paletteModeWindowTitle:
@@ -749,6 +777,21 @@ func (m *paletteModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.general.requestBack {
 				m.general.requestBack = false
+				m.state.Mode = paletteModeSettings
+				return m, nil
+			}
+			return m, cmd
+		}
+		if m.state.Mode == paletteModeWindowResize {
+			if m.windowResize == nil {
+				m.openWindowResizePanel()
+			}
+			model, cmd := m.windowResize.Update(msg)
+			if updated, ok := model.(*windowResizePanelModel); ok {
+				m.windowResize = updated
+			}
+			if m.windowResize.requestBack {
+				m.windowResize.requestBack = false
 				m.state.Mode = paletteModeSettings
 				return m, nil
 			}
@@ -1179,6 +1222,14 @@ func (m *paletteModel) View() string {
 			return m.general.render(styles, width, height)
 		}
 		return styles.muted.Render("General settings unavailable")
+	}
+	if m.state.Mode == paletteModeWindowResize {
+		if m.windowResize != nil {
+			m.windowResize.width = width
+			m.windowResize.height = height
+			return m.windowResize.render(styles, width, height)
+		}
+		return styles.muted.Render("Window & Resize settings unavailable")
 	}
 	if m.state.Mode == paletteModeWindowTitle {
 		if m.windowTitle != nil {

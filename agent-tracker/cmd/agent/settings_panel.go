@@ -35,6 +35,11 @@ func newSettingsPanelModel() *settingsPanelModel {
 				Mode:     paletteModeGeneral,
 			},
 			{
+				Title:    "Window & Resize",
+				Subtitle: "Orientation, pane ratios, and optional run pane",
+				Mode:     paletteModeWindowResize,
+			},
+			{
 				Title:    "Status Bar",
 				Subtitle: "Manage tmux bottom status bar modules",
 				Mode:     paletteModeStatusRight,

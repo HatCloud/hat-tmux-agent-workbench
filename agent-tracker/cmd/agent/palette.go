@@ -21,6 +21,7 @@ const (
 	paletteModeWindowTitle
 	paletteModeWindowNav
 	paletteModeGeneral
+	paletteModeWindowResize
 )
 
 type paletteActionKind int
