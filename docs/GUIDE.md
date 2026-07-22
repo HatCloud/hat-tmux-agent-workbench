@@ -126,11 +126,22 @@ agent
 
 缩写规则：客户端 `claude→CL`/`codex→CO`；provider 取首字母大写（`minimax→M`）；项目名去掉开头 `YYYY-MM-DD-` 日期前缀、超过 15 字符截断加 `…`（`2026-06-18-plugin-popup-reminders → plugin-popup-re…`）。状态栏 tab 前缀 `#I:` 是 tmux 窗口编号，可据此跳转。
 
-命名锚点是**当前窗口主 AI pane 那个 agent 会话的标题**。Claude 读 `~/.claude/sessions/<pid>.json` 的 `name`，Codex 读 `~/.codex/state_5.sqlite` 中最新 CLI thread 的 `title`，Grok 读 `~/.grok` 的 `summary.json`（经 `internal/agentclient`）。自动获取到的标题会按显示宽度截断到约 10 个汉字 / 20 个英文字母，避免 tab 和 Window Nav 过长；在 Claude 里给会话改名后，底部窗口名**自动同步**：
+命名锚点是**当前窗口主 AI pane 那个 agent 会话**。名称按固定优先级选择：
+
+1. 你在 Claude/Codex/Grok 内设置的 Session Name（最高）
+2. 你用 tmux `prefix ,` 设置的窗口自定义名称
+3. agent-tracker 根据首条 prompt 生成的短名称
+4. agent 自己生成的默认标题（兜底）
+
+新建且没有 Session Name 的会话会默认自动命名：先调用 Codex Luna，失败再用 DeepSeek Flash；结果尽量通过 adapter 写回 agent 原生会话，无法写回时保存为 tracker 自有的窗口别名。Claude、Codex 当前支持原生写回；Grok 当前只能读取/判定名称，因没有已验证的外部 rename API 而使用别名 fallback。tracker 会记录“这是自己生成的名称”，所以用户之后在 agent 内 rename 会升到第 1 级，而不会被旧的自动名称挡住。输入最多取首 prompt 的 4000 个字符，名称最多 48 个字符；模型全部失败后保留第 4 级默认标题并延迟重试。
+
+如果原生 Session Name 暂时遮住了你用 `prefix ,` 设置的窗口名，tracker 会保留这个第 2 级名称；原生名称清空后它会重新显示。要彻底交还自动命名，显式把窗口名清空即可。
+
+自动获取到的标题会限宽，避免 tab 和 Window Nav 过长；在 agent 内给会话改名后，底部窗口名**自动同步**：
 - **切窗 / 切 session / 聚焦**时即时重算（`after-select-window`/`client-session-changed`/`pane-focus-in` hook 触发全量 `sync-names`，含 client/provider 变化）。
 - **停留不动时**状态栏每秒发轻量触发，完整 `sync-names` 内部限流为最多每 5 秒一次；切窗/聚焦仍即时触发。重叠触发会自动合并，始终只运行一个 worker。
 
-**不经 `agent` 启动器**进入的窗口也能命名：只要主 pane 跑着 Claude/Codex 会话，client 自动推断。没有 AI 会话的普通 shell 窗口不会被改名。未命名会话回退到 `项目名·客户端#编号`。
+**不经 `agent` 启动器**进入的窗口也能命名：只要主 pane 跑着 Claude/Codex/Grok 会话，client 自动推断。没有 AI 会话的普通 shell 窗口不会被改名。没有首 prompt 或自动命名暂不可用时继续显示 agent 默认标题；两者都没有才回退到项目/客户端名称。
 
 项目名取 git 仓库根目录名（无 git 则取 pane 当前路径名）；客户端/provider 来自启动器写的 `@agent_client`/`@agent_provider`。
 
@@ -535,6 +546,7 @@ python3 ~/.hat-config/scripts/agent_tracker.py ack
 - **Strip date prefix**（默认 ON）：从窗口名/标题段剥掉前导 `YYYY-MM-DD-`，例如 `2026-07-09-open-source-refactor` 在 tmux 状态栏、通知标题、Window Nav 的 Name 列都显示为 `open-source-refactor`。OFF 时保留日期。
 - **Window nav size**（默认 `wide`）：`prefix w` 窗口导航弹窗宽度档位——`standard`（紧凑，~140 cap）/ `wide`（默认，~180 cap，够宽让底部提示行单行显示、Name 列留足宽度）/ `full`（~96% client 宽）。
 - **URL picker folders**（默认 OFF）：`prefix u` 抓屏结果里是否包含文件夹条目。默认关——裸词目录误报多（prompt/命令行里的 `tmux`、`scripts` 这类 token 都是真实存在的目录），且按「最近在前」排序时它们常占据列表头部；只在确实需要用 VS Code/Finder 打开目录时再开。文件/URL 条目不受影响。
+- **Auto-name sessions**（默认 ON）：为没有用户 Session Name 的新会话从首 prompt 生成短名称；模型顺序为 Codex Luna → DeepSeek Flash。关闭后不再启动新的命名任务，已有名称和 agent 默认标题仍按优先级显示。
 
 > **未来可配置（backlog，暂未实现，仅记录）**：completion grace window（busy→idle 完成去抖，现固定 2s）、remote-bell interval（现固定 3s）、workspace-save interval、window-title 最大长度、auto-rename 总开关、通知声音。
 

@@ -22,14 +22,14 @@
 
 ## Agent Adapter（`internal/agentclient`）
 
-所有 client（含 Claude/Codex）统一经 **Adapter 注册表** 接入；`cmd/agent` 编排层只消费归一的 `LiveSession`（Title/PersistTitle/Model/Provider/Status/LimitResetAt/Error/CWD/SourcePath），不含任何 provider 特化解析。可选能力接口：`FirstPrompter`（Window Nav "p" 首 prompt 预览）、`QuotaProvider`（reset timer 的 `quotaResetFireAt`）、`WatchHinter`（daemon fsnotify）、`RetryPolicier`（auto-retry 开关与续跑文案）。
+所有 client（含 Claude/Codex/Grok）统一经 **Adapter 注册表** 接入；`cmd/agent` 编排层只消费归一的 `LiveSession`（Title/PersistTitle/Name/Model/Provider/Status/LimitResetAt/Error/CWD/SourcePath），不含任何 provider 特化解析。`Adapter` 强制嵌入 `SessionNamer`（读/判定/写原生 Session Name；不支持者也必须显式返回 unsupported），可选能力接口则有 `FirstPrompter`（Window Nav "p" 首 prompt 预览及自动命名上下文）、`QuotaProvider`（reset timer 的 `quotaResetFireAt`）、`WatchHinter`（daemon fsnotify）、`RetryPolicier`（auto-retry 开关与续跑文案）。
 
 | 单元 | 路径 | 职责 |
 |------|------|------|
 | 契约 | `internal/agentclient/` | `Adapter`、`LiveSession`、`Index`（单次 ps + `Memo` sidecar）、`Registry.DetectForPane`/`AdapterByID`、`ratelimit.go`（耗尽窗口判定共用） |
-| Claude | `internal/agentclient/claude` | `~/.claude/sessions` + project JSONL（model/ai-title/429 [L]/终态错误 [E]）+ provider（ps eww → `~/.hat-env/providers`）；WatchHints；FirstPrompt；QuotaReset（429 精确 + statusline cache 保底）；Retry on |
-| Codex | `internal/agentclient/codex` | 进程 + 批量 lsof（rollout+cwd）+ rollout 状态机 + SQLite（thread meta / `Turn error:`）；[L] rate_limits；FirstPrompt；QuotaReset；Retry off（无 `RetryPolicier`） |
-| Grok | `internal/agentclient/grok` | `active_sessions.json`（per-pass Memo 缓存）+ summary + events；poll-only；Retry off |
+| Claude | `internal/agentclient/claude` | `~/.claude/sessions` + project JSONL（model/ai-title/custom-title/429 [L]/终态错误 [E]）+ provider（ps eww → `~/.hat-env/providers`）；FirstPrompt；SessionNamer（custom-title）；WatchHints；QuotaReset（429 精确 + statusline cache 保底）；Retry on |
+| Codex | `internal/agentclient/codex` | 进程 + 批量 lsof（rollout+cwd）+ rollout 状态机 + SQLite thread meta / `session_index.jsonl`（首条默认标题，后续变更为 CLI rename 信号）/ `Turn error:`；SessionNamer 经 app-server `thread/name/set`；[L] rate_limits；FirstPrompt；QuotaReset；Retry off（无 `RetryPolicier`） |
+| Grok | `internal/agentclient/grok` | `active_sessions.json`（per-pass Memo 缓存）+ summary + events + chat history；FirstPrompt；SessionNamer 只读判 provenance（外部写入 unsupported，tracker alias fallback）；poll-only；Retry off |
 | 注册 | `cmd/agent/agentclient_init.go`、`cmd/tracker-server/agentclient_init.go` | `init()` 调各 `Register()` |
 
 **每 sync pass 的成本形状**：一次 `ps`（`agentclient.BuildIndex`）+ 每 adapter 一次 sidecar 装载（claude sessions readdir、codex 全 pid 批量 `lsof -Ffn`、grok active_sessions 读取，均经 `Index.Memo` 每 pass 一次）；每窗口一次 `Registry.DetectForPane`，结果由 `sync_names.go` 传给 `agentWindowName` 与 reconcile 共用，不重复 Detect。
@@ -38,15 +38,15 @@
 
 **Grok 状态**：events 尾映射 busy/asking/idle；解析失败 → `unknown`（**不**驱动 finish_task，避免假完成 🔔）。Headless：`grok -p` / `grok agent` 过滤。
 
-**扩展第四 client**：实现 `Adapter` + `Register()` + launcher 一行 + 文档。`window_naming` 对「无 Claude/Codex 命中」走 Registry 通用分支（Grok 已走此路）。
+**扩展第四 client**：实现 `Adapter` + `Register()` + launcher 一行 + 文档。由于 `SessionNamer` 是强制合同，每个新 adapter 都必须先调研原生名称的 read / provenance detection / write 三项：可用则实现真实路径；暂不可用则返回 `Writable=false` / `ErrSessionNameUnsupported`，并在 `docs/SESSION_NAMING.md` 留下版本、命令/存储探测证据和明确降级原因，再使用 tracker-owned priority-3 alias。不得把 agent 默认标题误报成用户 Session Name。
 
-**Known debt**：Grok **无** `reset` quota timer 信号源（未实现 `QuotaProvider`）、无 FirstPrompt。（HAT-596 时代的「Claude/Codex 富化留在 legacy 路径」双栈已在 adapter 全面收编中清除。）
+**Known debt**：Grok **无** `reset` quota timer 信号源（未实现 `QuotaProvider`）。（HAT-596 时代的「Claude/Codex 富化留在 legacy 路径」双栈已在 adapter 全面收编中清除。）
 
 三个 Go 二进制（`agent-tracker/cmd/`）：
 
 - **tracker-server** — 常驻 daemon。监听 Unix socket，处理 `start_task`/`finish_task`/`update_task`/`mark_asking`/`acknowledge`/`delete_task`/`notify`/`notifications_toggle`/`set_notification_group_mode`。任务状态在**内存**，经 socket 回 `agent tracker state` 的 JSON 暴露，不持久化（旧的 `agents.json` workspace registry 已随 agent-workspace 重机制一并剔除）。
 - **tracker-mcp** — MCP server，给 Claude 暴露 `tracker_mark_start_working` 等 tool，转成 socket command 发给 daemon。
-- **agent** — 多用途 CLI/TUI：`agent tracker command <sub>`（发 socket 命令）、`agent tracker state`（查状态）、`agent tmux on-focus`（聚焦时拼窗口名+rename）、`agent tmux sync-names`（状态栏每 3 秒发轻量触发、内部把完整轮询限流为 5s，把所有 agent 窗口名同步成各自主 AI pane 的 Claude/Codex 会话标题）、`agent palette`（bubbletea 工作空间总览）、`agent tmux right-status`（状态栏右侧渲染）、`agent ime switch`（cgo 调 Carbon `TISSelectInputSource` 切输入源到 ABC，由 tmux prefix 的 root-table 绑定调用，见 `cmd/agent/ime_darwin.go`；不连 daemon 的快路径）。
+- **agent** — 多用途 CLI/TUI：`agent tracker command <sub>`（发 socket 命令）、`agent tracker state`（查状态）、`agent tmux on-focus`（聚焦时拼窗口名+rename）、`agent tmux sync-names`（状态栏按配置节奏触发，把所有 agent 窗口名同步成各自主 AI pane 的 Claude/Codex/Grok 会话标题，并按需派发自动命名 helper）、`agent tmux auto-name-session`（内部 detached helper；全局 single-flight 调 headless 模型并回写名称）、`agent palette`（bubbletea 工作空间总览）、`agent tmux right-status`（状态栏右侧渲染）、`agent ime switch`（cgo 调 Carbon `TISSelectInputSource` 切输入源到 ABC，由 tmux prefix 的 root-table 绑定调用，见 `cmd/agent/ime_darwin.go`；不连 daemon 的快路径）。
 
 ## 数据流
 
@@ -71,9 +71,13 @@
 
 **client/provider 实时**：检测到主 AI pane 有 Claude 会话时 client 推断为 `claude`，provider 从 claude 进程的初始 env `ANTHROPIC_BASE_URL`（`ps eww` 读，映射 `~/.hat-env/providers/*.env`）实时反查（`providerForPID`）——退出重进换 provider 名字跟着变。
 
-**命名锚点**：窗口名锚定**主 AI pane（`@agent_pane_role=ai`，回退 active pane）那个 AI 会话的标题**。Claude：`internal/agentclient/claude` adapter 经 `pane_pid` 进程树找到 claude 进程 pid，读 `~/.claude/sessions/<pid>.json` 的 `name`（`cmd/agent` 只消费 `LiveSession`）。Codex：识别 pane 子进程里的 `codex` CLI，以进程打开的 rollout 精确匹配 `threads.title` 和 `model`，而非仅按 cwd 取最新 thread。自动标题在**数据层截断到 100 rune**（`truncateWindowTitle`，尾加 `…`，按 rune 计数不切碎 CJK），之后才有显示层的进一步限宽：状态栏 `window-status-format` 用 `#{=/24/…:window_name}` 限宽，Window Nav 按列宽自适应截断。**数据层这道截断是内存安全边界，不是美观选择**——显示层的 `#{=/24/…:window_name}` 救不了内存：tmux 必须先把完整 `window_name` 展开成字符串才能截到 24 字符，每次状态栏重绘 + 每次 sync-names 都按全长分配一次，而 tmux 3.6b 不释放这些分配。Codex 用**整个 prompt** 当 session title（`liveTitle = live.Title`），`prefix ]` 的标题框也接受粘贴，所以超长标题是常态而非边缘情况：实测一个 6485 字节的窗口名让 tmux server 以 ~6MB/min 增长（两天堆到 6.8GB，heap 里 47 万个 ~14KB 块）。改这里前先读本段。有标题→`项目名·客户端·标题`；无标题→回退 `composeWindowName`（`项目名·客户端#编号`）。未设 `@agent_client`（没走启动器）时，若探测到主 pane 有活的 Claude/Codex 会话则推断 client；无 AI 会话的窗口不改名。触发：①事件即时——`pane-focus-in`/`after-select-window`/`client-session-changed` hook 跑全量 `sync-names`；②被动跟随——状态栏每 3 秒调用 `sync-names --periodic`，内部按 5s 限流。所有入口共享内核 `flock` single-flight：已有 sync 在跑时，新触发直接 coalesce，不启动第二个 worker；进程退出/被 kill 时锁由内核自动释放。`ps`/`lsof`/`sqlite3`/`tmux` 等外部查询均有 3s timeout，单轮另有 20s deadline，避免单次异常永久占用。`sync-names` 每次复用同一份 `ps`、Codex `lsof` 和 session/thread 状态索引，`rename` 仅在名字变化时执行；读取缺省 `@agent_*` option 使用 `show-options -q`，不再把预期的未设置状态写成 status-right 错误。
+**命名锚点与优先级**：窗口名锚定**主 AI pane（`@agent_pane_role=ai`，回退 active pane）那个 AI 会话**，名称严格按以下顺序仲裁：① adapter 判定为用户设置的原生 Session Name；② 用户用 tmux `rename-window` / `prefix ,` 修改的自定义窗口名；③ tracker 根据首 prompt 生成的名称（adapter 可写时同步回原生 Session Name，不可写时保存在 window option）；④ adapter 探测出的 agent 默认标题。`SessionNameState.Source` 区分 user/generated/none/unknown；tracker 自己写入原生名称前先持久化 `@agent_generated_name` + session fingerprint，避免下一轮把自己的写入误当作 level-1 用户名称。用户后续原生 rename 后 value 与 provenance 不同，会立即升到 level 1 并覆盖 tmux 自定义名；被遮挡的手动名保存在 `@agent_manual_window_name`，原生名清空后恢复，而用户显式清空窗口名会清除此来源。统一解析管线先由 `resolveAgentSessionTitle` 处理原生名 / tracker 名 / 默认标题，再由 `selectAgentDisplayTitle` 插入 tmux 手动名优先级；最终结果写进 `@agent_resolved_display_title`。底部 tmux title 与 Window Nav 都消费这份结果，不再分别从 `window_name` / `@agent_title` 推断 Session Name。
 
-**原始 prompt 查看**：Window Nav 选中 AI window 后按 `p`，即时按主 AI pane 定位会话并读取第一条 user prompt：Claude 读 `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`，Codex 读 `~/.codex/state_5.sqlite` 的 `rollout_path` JSONL。详情页按 `c` 调 `pbcopy` 复制。完整 prompt 不持久化到 tmux option，只在查看/复制时从本地 session 记录读取。
+**自动生成 Session Name**：General 的 `auto_name` 默认开启。`sync-names` 只对新 session、没有用户原生名称、且 adapter 能给出 FirstPrompt 的会话派发 detached helper；输入最多 4000 rune，输出清洗并限制 48 rune。模型顺序固定为 `openai/gpt-5.6-luna` → `deepseek/deepseek-v4-flash[1m]`，经 `agent-hl-cli dispatch` 的 JSON schema 只收 `{name}`；每个模型 35s 上限，失败按顺序 fallback，全部失败 10 分钟后才重试。helper 以跨窗口 `flock` 限制全局并发为 1，生成前后都重新 Detect + 比对 `client:sessionId` fingerprint，避免切 session 时把旧结果写给新会话。adapter 报 writable 时调用 `SessionNamer.SetSessionName`；unsupported / 写失败则保留 tracker-owned level-3 名称。当前 Claude/Codex 可写回原生名称，Grok 因没有已验证的外部 rename 合同而使用 tracker alias。能力证据与版本边界见 `docs/SESSION_NAMING.md`。
+
+Claude adapter 以 sessions meta `name` / JSONL `custom-title` 为原生名称、`ai-title` 为默认标题；Codex 以 `threads.title` / session index 首条记录为默认显示标题，同一 id 后续 `thread_name` 变化或非空 `threads.name` 才判为原生用户名称，写入走 app-server `thread/name/set`；Grok 以 `summary.json.generated_title` 为显示名，和 `session_summary` 相同视为默认、不同视为 `/rename` 名称，但只读不写私有存储。自动标题在**数据层截断到 100 rune**（`truncateWindowTitle`，尾加 `…`，按 rune 计数不切碎 CJK），之后才有显示层的进一步限宽：状态栏 `window-status-format` 用 `#{=/24/…:window_name}` 限宽，Window Nav 按列宽自适应截断。**数据层这道截断是内存安全边界，不是美观选择**——显示层的 `#{=/24/…:window_name}` 救不了内存：tmux 必须先把完整 `window_name` 展开成字符串才能截到 24 字符，每次状态栏重绘 + 每次 sync-names 都按全长分配一次，而 tmux 3.6b 不释放这些分配。Codex 用**整个 prompt** 当默认 title，超长标题是常态：实测一个 6485 字节的窗口名让 tmux server 以 ~6MB/min 增长。未设 `@agent_client` 时，若探测到主 pane 有活的 Claude/Codex/Grok 会话则推断 client；无 AI 会话的窗口不改名。触发：①事件即时——`pane-focus-in`/`after-select-window`/`client-session-changed` hook 跑全量 `sync-names`；②被动跟随——状态栏按 poll interval 调 `sync-names --periodic`。所有 sync 入口共享内核 `flock` single-flight；`ps`/`lsof`/`sqlite3`/`tmux` 等外部查询均有 3s timeout，单轮另有 20s deadline。`rename` 仅在名字变化时执行。
+
+**原始 prompt 查看**：Window Nav 选中 AI window 后按 `p`，即时按主 AI pane 定位会话并读取第一条 user prompt：Claude 读 project JSONL，Codex 读 thread rollout JSONL，Grok 读 `chat_history.jsonl`。详情页按 `c` 调 `pbcopy` 复制。完整 prompt 不持久化到 tmux option；自动命名只把有界输入交给本机已配置的 headless provider。
 
 **命名/ack**：`pane-focus-in`/`after-select-window` hook **分别**调用两件独立的事：
 - `agent tmux on-focus`（本地 CLI，`agentWindowName` 拼名后按需 `rename-window`）。
@@ -86,7 +90,7 @@
 | `agent-tracker/cmd/tracker-server/main.go` | daemon：socket 监听 + 任务状态 + 广播 |
 | `agent-tracker/cmd/tracker-mcp/main.go` | MCP server；`resolveContext` 在 `tmux_id` 空时落 `autodetectContext` fallback |
 | `agent-tracker/cmd/agent/main.go` | CLI/TUI 入口；命名拼装（`composeWindowName`/`splitSessionLabel`/`agentNameBase`/`applyOnFocusRename`） |
-| `agent-tracker/cmd/agent/{window_naming,sync_names,ssh_window,orientation}.go` | 窗口命名与 sync 编排（provider/model/[L]/[E]/session 探测已全部下沉到 `internal/agentclient` 各 adapter）：window_naming=`agentWindowName`（消费 `LiveSession`）/`agentAIPane`；sync_names=`agent tmux sync-names` 主循环（每窗一次 registry Detect）+ `reconcileActions`；ssh_window=ssh 检测/透传抓手；orientation=布局朝向 reconcile |
+| `agent-tracker/cmd/agent/{window_naming,sync_names,session_auto_name,ssh_window,orientation}.go` | 窗口命名与 sync 编排（provider/model/[L]/[E]/session 探测已下沉 adapter）：window_naming=四级名称仲裁与 `agentWindowName`；sync_names=每窗一次 registry Detect + reconcile；session_auto_name=headless 生成、provenance、native/fallback 写入；ssh_window=ssh 检测；orientation=布局 reconcile |
 | `agent-tracker/cmd/agent/tracker_cli.go` | `agent tracker command/state` 分发 |
 | `agent-tracker/cmd/agent/ime_darwin.go` | `agent ime switch`：cgo + Carbon TIS 切输入源到 ABC（`ime_other.go` 为非 darwin 桩） |
 | `agent-tracker/cmd/agent/palette*.go` | bubbletea 工作空间 palette |
@@ -187,8 +191,8 @@ daemon plist 配 `KeepAlive=true` + `RunAtLoad=true`：崩溃/被 `pkill` 都由
 
 ## 扩展指南
 
-- **加 client/provider**：Claude provider 来自 `~/.hat-env/providers/*.env`（picker 自动枚举）；新 client 在 `tmux/scripts/agent` 的 picker + case 映射加分支，命令名须在交互 shell 可解析（alias-common 函数或 PATH 上的 CLI）。若要支持实时标题/状态，在 `internal/agentclient/<client>/` 新建 adapter 实现 `Detect`（可选 `FirstPrompter`/`QuotaProvider`/`WatchHinter`/`RetryPolicier`）并在 `agentclient_init.go` 注册。
-- **改命名模板**：拼装在 `composeWindowName`/`splitSessionLabel`/`agentNameBase`（`cmd/agent/main.go`）；会话标题来源在各 adapter 的 `Detect`（`window_naming.go` 只消费 `LiveSession`）、sync 主循环在 `sync_names.go`。改完同步 `rename_test.go` 表。
+- **加 client/provider**：Claude provider 来自 `~/.hat-env/providers/*.env`（picker 自动枚举）；新 client 在 `tmux/scripts/agent` 的 picker + case 映射加分支，命令名须在交互 shell 可解析。新建 adapter 实现 `Detect` 并注册；同时必须按 `docs/SESSION_NAMING.md` 调研/记录名称 read、provenance detection、write，能做就实现 `SessionNamer`，不能做才显式降级。支持自动命名还需实现 `FirstPrompter`；其余可选接口为 `QuotaProvider`/`WatchHinter`/`RetryPolicier`。
+- **改命名模板**：拼装在 `composeWindowName`/`splitSessionLabel`/`agentNameBase`（`cmd/agent/main.go`）；四级名称仲裁与 provenance 在 `session_auto_name.go`/`window_naming.go`，原生名称来源在各 adapter，sync 主循环在 `sync_names.go`。改完同步 `rename_test.go` 与 `session_auto_name_test.go`。
 - **Timer 时间基准（`cmd/agent/window_timer.go`）**：`agent-config.json.timer_timezone` 控制墙上时间，缺省为 `UTC+8`；`auto` 使用 host `time.Local`，自定义值经 `parseTimerTimezone` 接受 IANA name 或 UTC offset。`HH:MM` 定点触发和 `daily` 循环按当前 location 的日历排程；面板、Window Nav 摘要及新增提示在格式化前统一 `.In(location)`；新建 timer/history 的持久化时间戳带当前 offset。General 面板 `Timer timezone` 行以 `Space` 切 auto、`Enter` 输入自定义值；`setTimerTimezone` 保存后立即重排所有 enabled time-trigger timer。duration 与 quota reset 都是绝对时长/时刻，不改变触发 instant；存量 RFC3339 时间戳无需迁移。
 - **额度探测（编排在 `cmd/agent/quota.go`，探测在各 adapter 的 `QuotaProvider.QuotaReset`）**：`quotaResetFireAt(windowID)` 经 registry Detect + `QuotaProvider` 解析 AI 客户端额度重置时刻——Codex 读会话 rollout 最新 `token_count` 的 `rate_limits.*.resets_at`（绝对 epoch；≥95% 用量的窗口取最晚，否则取 5h 边界），Claude 解析 session JSONL 里 429 记录的 "resets 12:40am (TZ)" 文案（被动：撞限后才有）。供 timer 的 `reset` 触发与 `[L]` limited 状态共用。**reset timer 三级调度（确切→保底→休眠）**：`scheduleQuotaFireAt` 依次尝试 ① 确切（429 文案 / codex rollout，+90s buffer）② 保底——claude adapter `fallbackResetAt` 读 `state/agent-tracker/claude-rate-limits.json`（**`~/.claude/bin/cc-statusline-official` 每次渲染状态栏时落盘** Claude Code 注入 statusline 的第一方 `rate_limits.{five_hour,seven_day}.resets_at`；timer 标 `QuotaFallback`）③ 都拿不到→置零休眠。`checkAndFireTimers` 每 tick 对「休眠或 fallback 态」quota timer 先查本窗 `@agent_limit_reset_at`、再查 `anyWindowQuotaLimitedUntil()`（额度是账号级，任一窗撞限即把全部升级为确切时刻）。Loop `reset`（`windowTimerLoopQuota`）触发后重走三级调度，Max exec 照常封顶；`DeleteOnDone`（表单 Auto del）让 timer 在最终一次执行后直接删除记录。`fireTimer` 注入前经 `dismissUsageLimitDialog` 清 Claude 额度弹窗（capture-pane 匹配文案 + 非 busy 才发 Esc）。timer History 为全局模板库（`timerHistoryAll` 跨窗去重，`deleteTimerHistoryCombo` 跨窗删）。改判定阈值/文案正则时同步 `quota_test.go`。
 - **加 palette 面板**：见 `cmd/agent/palette*.go`（bubbletea）。

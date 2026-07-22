@@ -14,6 +14,12 @@ custom providers) from the terminal. It gives each agent a three-pane window
 daemon, surfaces ⏳/🔔 task state and desktop notifications in the tmux status
 bar, and can snapshot/restore whole workspaces after a crash.
 
+Unnamed sessions can receive a short name from Codex Luna, with DeepSeek Flash
+as fallback. Claude and Codex names are written through their adapters; Grok
+uses a tracker-owned alias until it exposes a verified external rename API.
+Display precedence is native user session name, manual tmux name, generated
+tracker name, then the agent's default title.
+
 Everything is deployed into a live tmux environment through `scripts/deploy.sh`
 (or the higher-level `scripts/setup` wizard), and can be cleanly uninstalled.
 
