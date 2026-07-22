@@ -661,7 +661,7 @@ func run(args []string) error {
 
 func runTmuxCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|layout-auto-resize|layout-main-percent|layout-third-pane|layout-side-top-percent|status-position|new-agent-prompt|window-nav-size|url-picker-dirs>")
+		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|auto-name-session|reflow-focus|layout-default|layout-auto-resize|layout-main-percent|layout-third-pane|layout-side-top-percent|status-position|new-agent-prompt|window-nav-size|url-picker-dirs>")
 	}
 	switch args[0] {
 	case "on-focus":
