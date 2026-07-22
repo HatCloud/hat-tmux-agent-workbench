@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 无损把一个三 pane(ai/git/run) agent window 重排成指定朝向。
-# 用 break-pane -d 把 git/run 摘成游离窗口（保留进程），再 join-pane 按目标朝向接回，
+# 无损把一个两 pane(ai/git) 或三 pane(ai/git/run) agent window 重排成指定朝向。
+# 用 break-pane -d 把 git[/run] 摘成游离窗口（保留进程），再按配置比例接回，
 # 不杀 lazygit / run pane 里的进程，并恢复重排前的 active pane。
 # 是否需要重排由 reconcile（Go 侧）判断，本脚本被调用即执行一次重排；
 # 并发/高频调用靠下方每窗口锁串行化，避免 break/join 互相打断造成闪烁。
@@ -15,6 +15,16 @@ case "$target" in
   landscape|portrait) ;;
   *) tmux display-message "reflow: unknown orientation: $target"; exit 2 ;;
 esac
+
+agent_bin="$HOME/.hat-config/agent-tracker/bin/agent"
+main_percent="$("$agent_bin" tmux layout-main-percent 2>/dev/null || echo 55)"
+side_top_percent="$("$agent_bin" tmux layout-side-top-percent 2>/dev/null || echo 75)"
+[[ "$main_percent" =~ ^[0-9]+$ ]] || main_percent=55
+(( main_percent >= 40 && main_percent <= 75 )) || main_percent=55
+side_percent=$((100 - main_percent))
+[[ "$side_top_percent" =~ ^[0-9]+$ ]] || side_top_percent=75
+(( side_top_percent >= 50 && side_top_percent <= 90 )) || side_top_percent=75
+side_bottom_percent=$((100 - side_top_percent))
 
 # 串行化：同一 window 并发/高频 reflow 会让 break-pane/join-pane 互相打断而闪烁。
 # 用原子 mkdir 做每窗口锁，后来者直接让位；>10s 的陈旧锁（异常退出残留）可抢占。
@@ -45,29 +55,37 @@ while IFS='|' read -r pid role; do
   esac
 done < <(tmux list-panes -t "$window_id" -F '#{pane_id}|#{@agent_pane_role}')
 
-# 只对标准三 pane(ai/git/run) 布局动手，其余一律不碰。
-if [[ "$pane_total" -ne 3 || -z "$ai_pane" || -z "$git_pane" || -z "$run_pane" ]]; then
+# 只对标准两 pane(ai/git) / 三 pane(ai/git/run) 布局动手，其余一律不碰。
+if [[ -z "$ai_pane" || -z "$git_pane" ]]; then
+  exit 0
+fi
+if [[ "$pane_total" -ne 2 && "$pane_total" -ne 3 ]]; then
+  exit 0
+fi
+if [[ "$pane_total" -eq 3 && -z "$run_pane" ]]; then
   exit 0
 fi
 
 active="$(tmux display-message -p -t "$window_id" '#{pane_id}')"
 
-# 摘下 git/run 成游离窗口（-d 不切过去），ai 占满整窗。
+# 摘下 git[/run] 成游离窗口（-d 不切过去），ai 占满整窗。
 tmux break-pane -d -s "$git_pane"
-tmux break-pane -d -s "$run_pane"
+if [[ -n "$run_pane" ]]; then
+  tmux break-pane -d -s "$run_pane"
+fi
 
 case "$target" in
   landscape)
-    # ai(左 66%) | (git 上 76% / run 下 24%)
-    tmux join-pane -h -l 34% -s "$git_pane" -t "$ai_pane"
-    tmux join-pane -v -l 24% -s "$run_pane" -t "$git_pane"
+    tmux join-pane -h -l "${side_percent}%" -s "$git_pane" -t "$ai_pane"
     ;;
   portrait)
-    # ai(上 66%) / (git 左 73% | run 右 27%)
-    tmux join-pane -v -l 34% -s "$git_pane" -t "$ai_pane"
-    tmux join-pane -h -l 27% -s "$run_pane" -t "$git_pane"
+    tmux join-pane -v -l "${side_percent}%" -s "$git_pane" -t "$ai_pane"
     ;;
 esac
+
+if [[ -n "$run_pane" ]]; then
+  tmux join-pane -v -l "${side_bottom_percent}%" -s "$run_pane" -t "$git_pane"
+fi
 
 tmux set -w -t "$window_id" @agent_orientation "$target"
 tmux select-pane -t "$active"

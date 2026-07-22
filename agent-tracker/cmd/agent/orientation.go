@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// 布局朝向 reconcile：auto/pinned 判定、滞回带、比例检查、reflow 防抖、
+// 布局朝向 reconcile：auto-resize 开关、滞回带、reflow 防抖、
 // pane role 常量。从 claude_session.go 拆出。
 
 // Pane roles stamped into @agent_pane_role by tmux/scripts/build_agent_layout.sh.
@@ -34,20 +34,18 @@ func warnPaneRoleDrift(windowID, rolesOut string) {
 		return
 	}
 	paneRoleWarned[windowID] = sig
-	fmt.Fprintf(os.Stderr, "agent: window %s pane roles %q don't match ai/git/run; skipping reflow\n", windowID, sig)
+	fmt.Fprintf(os.Stderr, "agent: window %s pane roles %q don't match ai/git[/run]; skipping reflow\n", windowID, sig)
 }
 
-// reconcileWindowOrientation makes a window's actual layout match its configured
-// mode: a pinned landscape/portrait window is forced to that orientation, while an
-// "auto" window follows its current dimensions. No-op unless it's a standard
-// 3-pane ai/git/run layout and the orientation actually differs.
-// Called from the ~1s name-sync poll and on focus/resize (agent tmux reflow-focus),
+// reconcileWindowOrientation follows the window's dimensions only when the global
+// auto-resize feature is enabled. It never corrects pane proportions: a manual drag
+// must remain untouched while the orientation stays the same.
+// Called from the configured name-sync poll and on focus/resize (agent tmux reflow-focus),
 // so switching the terminal between portrait/landscape reflows every window the
 // moment it's selected.
 func reconcileWindowOrientation(windowID string) {
-	mode := tmuxWindowOption(windowID, "@agent_orientation_mode")
-	if mode == "" {
-		mode = "auto"
+	if !layoutAutoResizeSetting(loadAppConfig()) {
+		return
 	}
 	// Skip while the window is zoomed or any pane is in a tmux mode (copy-mode,
 	// choose-tree, etc.). list-panes reports the zoomed pane at full window size,
@@ -64,7 +62,7 @@ func reconcileWindowOrientation(windowID string) {
 			}
 		}
 	}
-	// Only ever touch a standard 3-pane ai/git/run layout.
+	// Only ever touch a standard 2-pane ai/git or 3-pane ai/git/run layout.
 	out, err := runTmuxOutput("list-panes", "-t", windowID, "-F", "#{@agent_pane_role}")
 	if err != nil {
 		return
@@ -75,8 +73,10 @@ func reconcileWindowOrientation(windowID string) {
 		roles[r] = true
 		n++
 	}
-	if n != 3 || !roles[paneRoleAI] || !roles[paneRoleGit] || !roles[paneRoleRun] {
-		// Roles present but not the expected ai/git/run trio = drift between this
+	validTwoPane := n == 2 && roles[paneRoleAI] && roles[paneRoleGit]
+	validThreePane := n == 3 && roles[paneRoleAI] && roles[paneRoleGit] && roles[paneRoleRun]
+	if !validTwoPane && !validThreePane {
+		// Roles present but not an expected pair/trio = drift between this
 		// constant set and build_agent_layout.sh (or a half-rebuilt layout). Log it
 		// once per distinct signature so the skip is traceable instead of silent.
 		if n > 0 {
@@ -85,32 +85,24 @@ func reconcileWindowOrientation(windowID string) {
 		return
 	}
 	current := tmuxWindowOption(windowID, "@agent_orientation")
-	var desired string
-	switch mode {
-	case "landscape", "portrait":
-		desired = mode // pinned: enforce the configured orientation
-	default: // auto: follow the window's current dimensions
-		dim, err := runTmuxOutput("display-message", "-p", "-t", windowID, "#{window_width} #{window_height}")
-		if err != nil {
-			return
-		}
-		var w, h int
-		if _, err := fmt.Sscanf(strings.TrimSpace(dim), "%d %d", &w, &h); err != nil || w <= 0 || h <= 0 {
-			return
-		}
-		desired = desiredOrientation(w, h, current)
-	}
-	if desired == "" {
+	dim, err := runTmuxOutput("display-message", "-p", "-t", windowID, "#{window_width} #{window_height}")
+	if err != nil {
 		return
 	}
-	// Reflow when the orientation is wrong, OR when it's right but the ai pane's
-	// proportions drifted (e.g. a restored / mid-resize layout with a too-small main
-	// pane) — orientation alone isn't enough to call a layout correct.
-	if desired == current && layoutProportionsOK(windowID, desired) {
+	var w, h int
+	if _, err := fmt.Sscanf(strings.TrimSpace(dim), "%d %d", &w, &h); err != nil || w <= 0 || h <= 0 {
+		return
+	}
+	desired := desiredOrientation(w, h, current)
+	if !shouldReflowOrientation(true, current, desired) {
 		return
 	}
 	script := filepath.Join(homeDir(), ".hat-config", "tmux", "scripts", "reflow_agent_layout.sh")
 	_, _ = runCommandOutput(10*time.Second, script, windowID, desired)
+}
+
+func shouldReflowOrientation(autoResize bool, current, desired string) bool {
+	return autoResize && desired != "" && desired != current
 }
 
 // reflowDebounceDelay is the trailing-debounce wait. Dragging a terminal to
@@ -162,47 +154,6 @@ func reflowDebouncePending(windowID string) bool {
 		return false
 	}
 	return time.Since(time.Unix(0, token)) < reflowDebounceDelay
-}
-
-// layoutProportionsOK reports whether the ai pane occupies roughly the expected
-// ~66% of the window along the layout's main axis (width for landscape, height for
-// portrait). Returns true (don't reflow) when it can't measure, to stay conservative.
-func layoutProportionsOK(windowID, orientation string) bool {
-	out, err := runTmuxOutput("list-panes", "-t", windowID, "-F", "#{@agent_pane_role}|#{pane_width}|#{pane_height}")
-	if err != nil {
-		return true
-	}
-	aiW, aiH := 0, 0
-	found := false
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		parts := strings.Split(line, "|")
-		if len(parts) == 3 && parts[0] == paneRoleAI {
-			aiW, _ = strconv.Atoi(parts[1])
-			aiH, _ = strconv.Atoi(parts[2])
-			found = true
-			break
-		}
-	}
-	if !found {
-		return true
-	}
-	dim, err := runTmuxOutput("display-message", "-p", "-t", windowID, "#{window_width} #{window_height}")
-	if err != nil {
-		return true
-	}
-	var ww, wh int
-	if _, err := fmt.Sscanf(strings.TrimSpace(dim), "%d %d", &ww, &wh); err != nil {
-		return true
-	}
-	aiDim, winDim := aiH, wh
-	if orientation == "landscape" {
-		aiDim, winDim = aiW, ww
-	}
-	if winDim <= 0 {
-		return true
-	}
-	pct := aiDim * 100 / winDim
-	return pct >= 60 && pct <= 72 // expected ~66%, with tolerance
 }
 
 // desiredOrientation maps window dimensions to landscape/portrait with a hysteresis

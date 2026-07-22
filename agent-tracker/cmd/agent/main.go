@@ -24,8 +24,17 @@ type appConfig struct {
 	StatusRight *statusRightConfig `json:"status_right,omitempty"`
 	WindowName  *windowNameConfig  `json:"window_name,omitempty"`
 	WindowNav   *windowNavConfig   `json:"window_nav,omitempty"`
-	// LayoutDefault: 新建 agent 窗口的默认布局模式（auto/landscape/portrait，空=auto）。
+	// LayoutDefault: auto-resize 关闭时新建 agent 窗口的初始朝向（landscape/portrait，空=landscape）。
+	// 旧配置中的 auto 仍兼容读取为 LayoutAutoResize=true。
 	LayoutDefault string `json:"layout_default,omitempty"`
+	// LayoutAutoResize: 窗口宽高跨过横竖阈值时是否自动 reflow（默认 false）。
+	LayoutAutoResize *bool `json:"layout_auto_resize,omitempty"`
+	// LayoutMainPercent: ai pane 占主轴的百分比（默认 55）。
+	LayoutMainPercent int `json:"layout_main_percent,omitempty"`
+	// LayoutThirdPane: 新建 agent 窗口是否增加 run pane（默认 false）。
+	LayoutThirdPane *bool `json:"layout_third_pane,omitempty"`
+	// LayoutSideTopPercent: 三 pane 时 git 占右侧/下侧区域高度的百分比（默认 75）。
+	LayoutSideTopPercent int `json:"layout_side_top_percent,omitempty"`
 	// StatusPosition: tmux status line 位置策略（auto/top/bottom，空=auto；auto 跟随布局朝向）。
 	StatusPosition string `json:"status_position,omitempty"`
 	// TimerTimezone: timer 墙上时间的时区（auto/IANA/UTC offset，空=UTC+8）。
@@ -199,11 +208,55 @@ func maybeStripDatePrefix(s string, enabled bool) string {
 	return datePrefixRe.ReplaceAllString(s, "")
 }
 
+func layoutOrientationSetting(cfg appConfig) string {
+	if strings.TrimSpace(cfg.LayoutDefault) == "portrait" {
+		return "portrait"
+	}
+	return "landscape"
+}
+
+// layoutAutoResizeSetting defaults off. LayoutDefault="auto" is accepted as a
+// migration path for configs written before auto-resize became an explicit toggle.
+func layoutAutoResizeSetting(cfg appConfig) bool {
+	if cfg.LayoutAutoResize != nil {
+		return *cfg.LayoutAutoResize
+	}
+	return strings.TrimSpace(cfg.LayoutDefault) == "auto"
+}
+
 func layoutDefaultSetting(cfg appConfig) string {
-	if cfg.LayoutDefault == "" {
+	if layoutAutoResizeSetting(cfg) {
 		return "auto"
 	}
-	return cfg.LayoutDefault
+	return layoutOrientationSetting(cfg)
+}
+
+func layoutMainPercentSetting(cfg appConfig) int {
+	if cfg.LayoutMainPercent >= 40 && cfg.LayoutMainPercent <= 75 {
+		return cfg.LayoutMainPercent
+	}
+	return 55
+}
+
+func layoutMainRatioSetting(cfg appConfig) string {
+	left := layoutMainPercentSetting(cfg)
+	return fmt.Sprintf("%d:%d", left, 100-left)
+}
+
+func layoutThirdPaneSetting(cfg appConfig) bool {
+	return derefBool(cfg.LayoutThirdPane, false)
+}
+
+func layoutSideTopPercentSetting(cfg appConfig) int {
+	if cfg.LayoutSideTopPercent >= 50 && cfg.LayoutSideTopPercent <= 90 {
+		return cfg.LayoutSideTopPercent
+	}
+	return 75
+}
+
+func layoutSideRatioSetting(cfg appConfig) string {
+	top := layoutSideTopPercentSetting(cfg)
+	return fmt.Sprintf("%d:%d", top, 100-top)
 }
 
 func statusPositionSetting(cfg appConfig) string {
@@ -239,15 +292,95 @@ func nextInCycle(cur string, opts []string) string {
 	return opts[0]
 }
 
-// cycleLayoutDefault advances auto→landscape→portrait→auto and persists it.
-func cycleLayoutDefault() (string, error) {
-	next := ""
-	err := updateAppConfig(func(cfg *appConfig) {
-		next = nextInCycle(layoutDefaultSetting(*cfg), []string{"auto", "landscape", "portrait"})
-		if next == "auto" {
+func setLayoutOrientation(value string) error {
+	if value != "landscape" && value != "portrait" {
+		return fmt.Errorf("invalid layout orientation %q", value)
+	}
+	return updateAppConfig(func(cfg *appConfig) {
+		persistLayoutOrientation(cfg, value)
+	})
+}
+
+func persistLayoutOrientation(cfg *appConfig, value string) {
+	// Preserve the old layout_default=auto meaning while migrating it to the
+	// dedicated toggle. Choosing an orientation must not silently disable
+	// auto-resize for an existing config.
+	if cfg.LayoutAutoResize == nil && strings.TrimSpace(cfg.LayoutDefault) == "auto" {
+		cfg.LayoutAutoResize = boolPtr(true)
+	}
+	if value == "portrait" {
+		cfg.LayoutDefault = "portrait"
+	} else {
+		cfg.LayoutDefault = ""
+	}
+}
+
+func toggleLayoutAutoResize() error {
+	return updateAppConfig(func(cfg *appConfig) {
+		if layoutAutoResizeSetting(*cfg) {
+			// Normalize the legacy layout_default=auto representation while turning
+			// the feature off; false is the default, so both keys can stay absent.
+			orientation := layoutOrientationSetting(*cfg)
+			cfg.LayoutAutoResize = nil
+			if orientation == "portrait" {
+				cfg.LayoutDefault = "portrait"
+			} else {
+				cfg.LayoutDefault = ""
+			}
+			return
+		}
+		cfg.LayoutAutoResize = boolPtr(true)
+		if strings.TrimSpace(cfg.LayoutDefault) == "auto" {
 			cfg.LayoutDefault = ""
+		}
+	})
+}
+
+func cycleLayoutMainPercent() (int, error) {
+	presets := []int{50, 55, 60, 65, 70}
+	next := presets[0]
+	err := updateAppConfig(func(cfg *appConfig) {
+		cur := layoutMainPercentSetting(*cfg)
+		for i, value := range presets {
+			if value == cur {
+				next = presets[(i+1)%len(presets)]
+				break
+			}
+		}
+		if next == 55 {
+			cfg.LayoutMainPercent = 0
 		} else {
-			cfg.LayoutDefault = next
+			cfg.LayoutMainPercent = next
+		}
+	})
+	return next, err
+}
+
+func toggleLayoutThirdPane() error {
+	return updateAppConfig(func(cfg *appConfig) {
+		if layoutThirdPaneSetting(*cfg) {
+			cfg.LayoutThirdPane = nil
+		} else {
+			cfg.LayoutThirdPane = boolPtr(true)
+		}
+	})
+}
+
+func cycleLayoutSideTopPercent() (int, error) {
+	presets := []int{50, 60, 70, 75, 80}
+	next := presets[0]
+	err := updateAppConfig(func(cfg *appConfig) {
+		cur := layoutSideTopPercentSetting(*cfg)
+		for i, value := range presets {
+			if value == cur {
+				next = presets[(i+1)%len(presets)]
+				break
+			}
+		}
+		if next == 75 {
+			cfg.LayoutSideTopPercent = 0
+		} else {
+			cfg.LayoutSideTopPercent = next
 		}
 	})
 	return next, err
@@ -528,7 +661,7 @@ func run(args []string) error {
 
 func runTmuxCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|status-position|new-agent-prompt|window-nav-size|url-picker-dirs>")
+		return fmt.Errorf("usage: agent tmux <on-focus|right-status|sync-names|reflow-focus|layout-default|layout-auto-resize|layout-main-percent|layout-third-pane|layout-side-top-percent|status-position|new-agent-prompt|window-nav-size|url-picker-dirs>")
 	}
 	switch args[0] {
 	case "on-focus":
@@ -543,6 +676,18 @@ func runTmuxCommand(args []string) error {
 		return runTmuxReflowFocus(args[1:])
 	case "layout-default":
 		fmt.Println(layoutDefaultSetting(loadAppConfig()))
+		return nil
+	case "layout-auto-resize":
+		fmt.Println(strconv.FormatBool(layoutAutoResizeSetting(loadAppConfig())))
+		return nil
+	case "layout-main-percent":
+		fmt.Println(layoutMainPercentSetting(loadAppConfig()))
+		return nil
+	case "layout-third-pane":
+		fmt.Println(strconv.FormatBool(layoutThirdPaneSetting(loadAppConfig())))
+		return nil
+	case "layout-side-top-percent":
+		fmt.Println(layoutSideTopPercentSetting(loadAppConfig()))
 		return nil
 	case "status-position":
 		fmt.Println(statusPositionSetting(loadAppConfig()))
@@ -569,9 +714,9 @@ func runTmuxCommand(args []string) error {
 	}
 }
 
-// runTmuxReflowFocus reconciles a single window's layout orientation with its
-// configured mode. Wired to focus/resize hooks so a window adapts the moment it's
-// selected after the terminal switched between portrait and landscape.
+// runTmuxReflowFocus reconciles a single window only when global auto-resize is
+// enabled. It is wired to focus/resize hooks so an opted-in window adapts after
+// the terminal crosses the portrait/landscape threshold.
 func runTmuxReflowFocus(args []string) error {
 	fs := flag.NewFlagSet("agent tmux reflow-focus", flag.ContinueOnError)
 	window := fs.String("window", "", "tmux window id to reconcile")

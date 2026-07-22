@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,8 +20,6 @@ import (
 const (
 	generalOptionNotifications  = "notifications"
 	generalOptionNotifyGroup    = "notification_group"
-	generalOptionLayoutDefault  = "layout_default"
-	generalOptionStatusPosition = "status_position"
 	generalOptionIconSet        = "icon_set"
 	generalOptionTimerTimezone  = "timer_timezone"
 	generalOptionPollInterval   = "poll_interval"
@@ -83,20 +79,6 @@ func (m *generalPanelModel) reload() {
 			Subtitle: "single = newest replaces older; per_window = one notification per window",
 			Value:    notificationGroupModeSetting(),
 			Values:   []string{"single", "per_window"},
-		},
-		{
-			Key:      generalOptionLayoutDefault,
-			Title:    "Default layout",
-			Subtitle: "Orientation for newly created agent windows",
-			Value:    layoutDefaultSetting(cfg),
-			Values:   []string{"auto", "landscape", "portrait"},
-		},
-		{
-			Key:      generalOptionStatusPosition,
-			Title:    "Status bar position",
-			Subtitle: "Where the tmux status line sits (auto = follow layout orientation)",
-			Value:    statusPositionSetting(cfg),
-			Values:   []string{"auto", "top", "bottom"},
 		},
 		{
 			Key:      generalOptionIconSet,
@@ -354,18 +336,6 @@ func (m *generalPanelModel) toggleSelected() {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
 			return
 		}
-	case generalOptionLayoutDefault:
-		if _, err := cycleLayoutDefault(); err != nil {
-			m.setStatus(err.Error(), 1500*time.Millisecond)
-			return
-		}
-	case generalOptionStatusPosition:
-		if _, err := cycleStatusPosition(); err != nil {
-			m.setStatus(err.Error(), 1500*time.Millisecond)
-			return
-		}
-		// 立即按新策略重定位 status line
-		_ = exec.Command(filepath.Join(homeDir(), ".hat-config", "tmux", "scripts", "update_status_position.sh")).Run()
 	case generalOptionIconSet:
 		if _, err := cycleIconSet(); err != nil {
 			m.setStatus(err.Error(), 1500*time.Millisecond)
@@ -497,18 +467,6 @@ func (m *generalPanelModel) render(styles paletteStyles, width, height int) stri
 				stateText = "Each window keeps its own notification"
 			} else {
 				stateText = "One notification; newer replaces older"
-			}
-		case entry.Key == generalOptionLayoutDefault:
-			if entry.Value == "auto" {
-				stateText = "New windows pick orientation by window size"
-			} else {
-				stateText = "New windows open in " + entry.Value + " layout"
-			}
-		case entry.Key == generalOptionStatusPosition:
-			if entry.Value == "auto" {
-				stateText = "Status line follows layout orientation"
-			} else {
-				stateText = "Status line pinned to " + entry.Value
 			}
 		case entry.Key == generalOptionIconSet:
 			switch entry.Value {
