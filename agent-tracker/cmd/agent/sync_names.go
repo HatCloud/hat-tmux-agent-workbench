@@ -90,9 +90,10 @@ func hasSyncArg(args []string, flag string) bool {
 	return false
 }
 
-// runTmuxSyncNames re-syncs every window's name from its AI pane's Claude session
-// (or launcher @agent_client). The status bar invokes --periodic every second,
-// which is rate-limited to one full pass per 5s; navigation hooks remain immediate.
+// runTmuxSyncNames re-syncs every window's name from its AI pane's live agent
+// session (or launcher @agent_client). The status bar invokes --periodic on its
+// refresh cadence, which is rate-limited by the configured poll interval;
+// navigation hooks remain immediate.
 // All callers share a non-blocking kernel lock, so slow passes are coalesced and
 // can never accumulate into a process storm.
 func runTmuxSyncNames(args []string) error {

@@ -49,7 +49,7 @@ func agentAIPane(windowID string, acIdx *agentclient.Index) string {
 	// No pane tagged role=ai (e.g. a window rebuilt by workspace-restore that
 	// lost its @agent_pane_role). Prefer the pane whose process tree actually
 	// hosts a live agent session over the active pane, which may be the
-	// git/run/zsh pane when the user has focus there.
+	// git/zsh pane when the user has focus there.
 	if acIdx != nil {
 		for _, p := range paneIDs {
 			if _, ok := agentclient.DefaultRegistry().DetectForPane(acIdx, panePID(p), ""); ok {
@@ -183,7 +183,7 @@ func agentWindowName(windowID, sessionID, aiPane string, live *agentclient.LiveS
 			}
 			return marker, false
 		}
-		// A pending agent window — its 3-pane layout was built via `prefix ]` with a
+		// A pending agent window — its configured pane layout was built via `prefix ]` with a
 		// typed title (persisted to @agent_title) but the agent process hasn't come
 		// up yet, so @agent_client is still empty. Name it from @agent_title so the
 		// typed title shows immediately instead of the bare shell name ("zsh"); once

@@ -560,7 +560,7 @@ func (s *server) markTaskAttention(target tmuxTarget, attention string) bool {
 // acknowledgeTask marks tasks as read when the user focuses a window. The 🔔 is
 // rendered per-window, so acknowledgement is window-scoped: focusing any pane in
 // the window clears every task under it, not just the one on the focused pane
-// (the user may land on the git/run pane while the agent task lives on the ai pane).
+// (the user may land on the git pane while the agent task lives on the ai pane).
 // acknowledgeTask marks a window's tasks read and reports whether any were
 // previously unread (so callers can clear the window's notification only when
 // there was actually something to clear).

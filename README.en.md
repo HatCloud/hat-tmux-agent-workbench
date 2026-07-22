@@ -8,9 +8,9 @@
 > own customizations; the project is MIT-licensed, so you're free to modify it
 > however you like.
 
-A personal tmux workflow for driving AI coding agents (Claude Code, Codex, and
-custom providers) from the terminal. It gives each agent a two-pane window by
-default (agent / git, with an optional third run pane), auto-names and
+A personal tmux workflow for driving AI coding agents (Claude Code, Codex,
+Grok Build, and custom providers) from the terminal. It gives each agent a
+two-pane window by default (agent / git, with an optional third run pane), auto-names and
 status-tracks those windows from a small Go
 daemon, surfaces ⏳/🔔 task state and desktop notifications in the tmux status
 bar, and can snapshot/restore whole workspaces after a crash.
