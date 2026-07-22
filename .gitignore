@@ -1,6 +1,7 @@
 /.DS_Store
 /tmp/
 /state/
+/snippets/
 /.hl-sessions/
 __pycache__/
 *.pyc
