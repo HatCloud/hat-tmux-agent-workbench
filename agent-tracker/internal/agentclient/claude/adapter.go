@@ -140,10 +140,23 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 			PID:          pid,
 			CWD:          meta.CWD,
 			SourcePath:   jsonl,
+			Name: agentclient.SessionNameState{
+				Value: meta.Name, Source: agentclient.SessionNameNone, Writable: true,
+			},
+		}
+		if meta.Name != "" {
+			s.Name.Source = agentclient.SessionNameUser
 		}
 		// Model + ai-title in one bounded read; the full-scan fallback only
 		// triggers while data is actually missing from the tail.
-		model, aiTitle := probeSessionJSONL(jsonl, meta.Name == "")
+		model, aiTitle, customTitle := probeSessionJSONL(jsonl, meta.Name == "")
+		if s.Title == "" && customTitle != "" {
+			s.Title = customTitle
+			s.PersistTitle = customTitle
+			s.Name = agentclient.SessionNameState{
+				Value: customTitle, Source: agentclient.SessionNameUser, Writable: true,
+			}
+		}
 		if s.Title == "" && aiTitle != "" {
 			s.Title = aiTitle
 		}
@@ -239,4 +252,5 @@ var (
 	_ agentclient.RetryPolicier = (*Adapter)(nil)
 	_ agentclient.FirstPrompter = (*Adapter)(nil)
 	_ agentclient.QuotaProvider = (*Adapter)(nil)
+	_ agentclient.SessionNamer  = (*Adapter)(nil)
 )

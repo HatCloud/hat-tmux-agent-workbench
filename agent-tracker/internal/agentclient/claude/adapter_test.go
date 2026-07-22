@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,6 +80,68 @@ func TestDetectFillsTitleModelStatus(t *testing.T) {
 	}
 	if s.CWD != "/proj" || s.SessionKey != "sid-1" || s.SourcePath == "" {
 		t.Fatalf("addressing fields: %+v", s)
+	}
+}
+
+func TestSessionNamingUsesCustomTitleNotAITitle(t *testing.T) {
+	home := t.TempDir()
+	jsonl := writeSession(t, home, 4242,
+		`{"pid":4242,"name":"","status":"idle","sessionId":"sid-1","cwd":"/proj","entrypoint":"cli"}`,
+		`{"type":"ai-title","aiTitle":"agent default"}`+"\n")
+	a := &Adapter{Home: home}
+	s, ok := a.Detect(testIndex(4242), 100)
+	if !ok || s.Title != "agent default" {
+		t.Fatalf("initial detect = %+v ok=%v", s, ok)
+	}
+	state, err := a.SessionName(s)
+	if err != nil || state.Source != agentclient.SessionNameNone || !state.Writable {
+		t.Fatalf("unnamed state = %+v err=%v", state, err)
+	}
+	if err := a.SetSessionName(context.Background(), s, "Meaningful Name"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(jsonl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"type":"custom-title"`) ||
+		!strings.Contains(string(body), `"customTitle":"Meaningful Name"`) {
+		t.Fatalf("custom-title record missing: %s", body)
+	}
+	s, ok = a.Detect(testIndex(4242), 100)
+	if !ok || s.Title != "Meaningful Name" || s.PersistTitle != "Meaningful Name" {
+		t.Fatalf("custom title must outrank ai-title: %+v ok=%v", s, ok)
+	}
+	state, err = a.SessionName(s)
+	if err != nil || state.Value != "Meaningful Name" || state.Source != agentclient.SessionNameUser {
+		t.Fatalf("named state = %+v err=%v", state, err)
+	}
+	if err := a.SetSessionName(context.Background(), s, "overwrite"); err != agentclient.ErrSessionAlreadyNamed {
+		t.Fatalf("second SetSessionName err=%v, want ErrSessionAlreadyNamed", err)
+	}
+}
+
+func TestSetSessionNameHonorsCanceledContext(t *testing.T) {
+	home := t.TempDir()
+	jsonl := writeSession(t, home, 4242,
+		`{"pid":4242,"name":"","status":"idle","sessionId":"sid-1","cwd":"/proj","entrypoint":"cli"}`,
+		`{"type":"ai-title","aiTitle":"agent default"}`+"\n")
+	a := &Adapter{Home: home}
+	s, ok := a.Detect(testIndex(4242), 100)
+	if !ok {
+		t.Fatal("expected detect")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.SetSessionName(ctx, s, "must not write"); err != context.Canceled {
+		t.Fatalf("SetSessionName err=%v, want canceled", err)
+	}
+	body, err := os.ReadFile(jsonl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "custom-title") {
+		t.Fatalf("canceled write changed transcript: %s", body)
 	}
 }
 

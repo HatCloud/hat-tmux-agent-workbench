@@ -49,4 +49,7 @@ type LiveSession struct {
 	// (Claude: project JSONL; Codex: rollout JSONL; Grok: session dir), used by
 	// FirstPrompter / QuotaProvider without re-deriving it.
 	SourcePath string
+	// Name is the native session naming state reported by the adapter. Title may
+	// still contain an agent-generated default when Name.Source is none.
+	Name SessionNameState
 }

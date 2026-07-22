@@ -2,6 +2,8 @@
 package grok
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -106,7 +108,9 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 	if !ok {
 		return agentclient.LiveSession{}, false
 	}
-	title, model := readSummary(filepath.Join(sessionDir, "summary.json"))
+	summary, summaryOK := readSummaryData(filepath.Join(sessionDir, "summary.json"))
+	title, model := summary.title(), strings.TrimSpace(summary.CurrentModelID)
+	nameState := sessionNameState(summary, summaryOK)
 	status := statusFromEvents(filepath.Join(sessionDir, "events.jsonl"))
 	return agentclient.LiveSession{
 		Client:       clientID,
@@ -118,6 +122,7 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 		PID:          grokPID,
 		CWD:          ent.CWD,
 		SourcePath:   sessionDir,
+		Name:         nameState,
 	}, true
 }
 
@@ -174,24 +179,89 @@ func (a *Adapter) sessionDir(home string, ent *activeEntry) (string, bool) {
 	return found, true
 }
 
-func readSummary(path string) (title, model string) {
+type summaryData struct {
+	GeneratedTitle string `json:"generated_title"`
+	SessionSummary string `json:"session_summary"`
+	CurrentModelID string `json:"current_model_id"`
+}
+
+func (s summaryData) title() string {
+	if title := strings.TrimSpace(s.GeneratedTitle); title != "" {
+		return title
+	}
+	return strings.TrimSpace(s.SessionSummary)
+}
+
+func readSummaryData(path string) (summaryData, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", ""
+		return summaryData{}, false
 	}
-	var s struct {
-		GeneratedTitle  string `json:"generated_title"`
-		SessionSummary  string `json:"session_summary"`
-		CurrentModelID  string `json:"current_model_id"`
-	}
+	var s summaryData
 	if json.Unmarshal(data, &s) != nil {
-		return "", ""
+		return summaryData{}, false
 	}
-	title = strings.TrimSpace(s.GeneratedTitle)
-	if title == "" {
-		title = strings.TrimSpace(s.SessionSummary)
+	s.GeneratedTitle = strings.TrimSpace(s.GeneratedTitle)
+	s.SessionSummary = strings.TrimSpace(s.SessionSummary)
+	return s, true
+}
+
+func sessionNameState(summary summaryData, valid bool) agentclient.SessionNameState {
+	if !valid || (summary.GeneratedTitle != "" && summary.SessionSummary == "") {
+		return agentclient.SessionNameState{Value: summary.GeneratedTitle, Source: agentclient.SessionNameUnknown}
 	}
-	return title, strings.TrimSpace(s.CurrentModelID)
+	if summary.GeneratedTitle == "" {
+		return agentclient.SessionNameState{Source: agentclient.SessionNameNone}
+	}
+	if summary.GeneratedTitle != summary.SessionSummary {
+		return agentclient.SessionNameState{Value: summary.GeneratedTitle, Source: agentclient.SessionNameUser}
+	}
+	return agentclient.SessionNameState{Value: summary.GeneratedTitle, Source: agentclient.SessionNameGenerated}
+}
+
+// SessionName distinguishes Grok's default title (generated_title equals
+// session_summary) from /rename (generated_title differs). This is the on-disk
+// shape used by Grok 0.2.x. Grok exposes interactive /rename but no verified
+// external rename API, so generated names stay tracker-owned.
+func (a *Adapter) SessionName(s agentclient.LiveSession) (agentclient.SessionNameState, error) {
+	summary, ok := readSummaryData(filepath.Join(s.SourcePath, "summary.json"))
+	return sessionNameState(summary, ok), nil
+}
+
+func (a *Adapter) SetSessionName(context.Context, agentclient.LiveSession, string) error {
+	return agentclient.ErrSessionNameUnsupported
+}
+
+func (a *Adapter) FirstPrompt(s agentclient.LiveSession) string {
+	f, err := os.Open(filepath.Join(s.SourcePath, "chat_history.jsonl"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64<<10), 4<<20)
+	for scanner.Scan() {
+		var entry struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil || entry.Type != "user" {
+			continue
+		}
+		var parts []string
+		for _, part := range entry.Content {
+			if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+				parts = append(parts, strings.TrimSpace(part.Text))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	return ""
 }
 
 // statusFromEvents maps events.jsonl tail → busy|asking|idle|unknown.
@@ -321,5 +391,8 @@ func statusFromEvents(path string) string {
 func Register() {
 	agentclient.RegisterDefault(&Adapter{})
 }
+
+var _ agentclient.SessionNamer = (*Adapter)(nil)
+var _ agentclient.FirstPrompter = (*Adapter)(nil)
 
 var _ agentclient.Adapter = (*Adapter)(nil)

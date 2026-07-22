@@ -2,6 +2,7 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,7 +17,8 @@ const clientID = "codex"
 
 // Adapter detects Codex CLI threads via process tree + SQLite / rollout.
 type Adapter struct {
-	Home string
+	Home    string
+	setName func(context.Context, string, string) error
 }
 
 func (a *Adapter) ID() string { return clientID }
@@ -124,22 +126,33 @@ func parseProcFilesFromLsof(out string) procFiles {
 }
 
 type threadMeta struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	CWD         string `json:"cwd"`
-	Model       string `json:"model"`
-	RolloutPath string `json:"rollout_path"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Name          string `json:"name"`
+	NameSupported bool   `json:"-"`
+	CWD           string `json:"cwd"`
+	Model         string `json:"model"`
+	RolloutPath   string `json:"rollout_path"`
 }
 
 func shellSQLString(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-func (a *Adapter) queryThreads(where string) (threadMeta, bool) {
-	query := `select id, title, cwd, coalesce(model, '') as model, rollout_path ` +
+func (a *Adapter) queryThreads(idx *agentclient.Index, where string) (threadMeta, bool) {
+	query := `select id, title, coalesce(name, '') as name, cwd, coalesce(model, '') as model, rollout_path ` +
 		`from threads where ` + where +
 		` and source = 'cli' order by updated_at_ms desc limit 1;`
 	out, err := agentclient.RunOutput(3*time.Second, "sqlite3", "-json", a.stateDB(), query)
+	nameSupported := err == nil
+	if err != nil {
+		// Codex versions before the native thread-name API have no name column.
+		// Preserve detection/title behavior while reporting naming unsupported.
+		legacyQuery := `select id, title, cwd, coalesce(model, '') as model, rollout_path ` +
+			`from threads where ` + where +
+			` and source = 'cli' order by updated_at_ms desc limit 1;`
+		out, err = agentclient.RunOutput(3*time.Second, "sqlite3", "-json", a.stateDB(), legacyQuery)
+	}
 	if err != nil || strings.TrimSpace(string(out)) == "" {
 		return threadMeta{}, false
 	}
@@ -147,10 +160,11 @@ func (a *Adapter) queryThreads(where string) (threadMeta, bool) {
 	if json.Unmarshal(out, &rows) != nil || len(rows) == 0 {
 		return threadMeta{}, false
 	}
+	rows[0].Name, rows[0].NameSupported = a.resolveThreadName(idx, rows[0].ID, rows[0].Name, nameSupported)
 	return rows[0], true
 }
 
-func (a *Adapter) threadForRollouts(paths []string) (threadMeta, bool) {
+func (a *Adapter) threadForRollouts(idx *agentclient.Index, paths []string) (threadMeta, bool) {
 	var quoted []string
 	seen := map[string]bool{}
 	for _, p := range paths {
@@ -164,15 +178,15 @@ func (a *Adapter) threadForRollouts(paths []string) (threadMeta, bool) {
 	if len(quoted) == 0 {
 		return threadMeta{}, false
 	}
-	return a.queryThreads(`rollout_path in (` + strings.Join(quoted, ",") + `)`)
+	return a.queryThreads(idx, `rollout_path in (`+strings.Join(quoted, ",")+`)`)
 }
 
-func (a *Adapter) latestThreadForCWD(cwd string) (threadMeta, bool) {
+func (a *Adapter) latestThreadForCWD(idx *agentclient.Index, cwd string) (threadMeta, bool) {
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		return threadMeta{}, false
 	}
-	return a.queryThreads(`cwd = ` + shellSQLString(cwd))
+	return a.queryThreads(idx, `cwd = `+shellSQLString(cwd))
 }
 
 // threadStatus resolves the rollout status + SQLite turn-error overlay, cached
@@ -216,26 +230,33 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 	for _, pid := range idx.WalkSubtree(panePID) {
 		rollouts = append(rollouts, pf.Rollouts[pid]...)
 	}
-	meta, ok := a.threadForRollouts(rollouts)
+	meta, ok := a.threadForRollouts(idx, rollouts)
 	if !ok {
 		// No rollout binding yet (thread just starting): fall back to the
 		// process cwd's most recent thread.
-		meta, _ = a.latestThreadForCWD(pf.CWDs[codexPID])
+		meta, _ = a.latestThreadForCWD(idx, pf.CWDs[codexPID])
 	}
 	status := a.threadStatus(idx, meta)
 	if status == "" {
 		status = agentclient.StatusUnknown
 	}
+	title := meta.Title
+	nameState := sessionNameState(meta)
+	if nameState.Source == agentclient.SessionNameUser {
+		name := nameState.Value
+		title = name
+	}
 	s := agentclient.LiveSession{
 		Client:       clientID,
-		Title:        meta.Title,
-		PersistTitle: meta.Title,
+		Title:        title,
+		PersistTitle: title,
 		Model:        meta.Model,
 		Status:       status,
 		SessionKey:   meta.ID,
 		PID:          codexPID,
 		CWD:          meta.CWD,
 		SourcePath:   meta.RolloutPath,
+		Name:         nameState,
 	}
 	if status == "error" {
 		// Codex reports no error class; the SQLite probe only proves the turn
@@ -282,4 +303,5 @@ var (
 	_ agentclient.Adapter       = (*Adapter)(nil)
 	_ agentclient.FirstPrompter = (*Adapter)(nil)
 	_ agentclient.QuotaProvider = (*Adapter)(nil)
+	_ agentclient.SessionNamer  = (*Adapter)(nil)
 )

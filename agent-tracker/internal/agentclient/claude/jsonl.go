@@ -39,11 +39,12 @@ func tailScanner(f *os.File, tailBytes int64) *bufio.Scanner {
 // scanModelAndTitle folds one pass over session JSONL lines, keeping the latest
 // assistant model and ai-title. skipFirst drops the first (likely partial) line
 // when the reader starts mid-file.
-func scanModelAndTitle(r io.Reader, skipFirst bool) (model, aiTitle string) {
+func scanModelAndNames(r io.Reader, skipFirst bool) (model, aiTitle, customTitle string) {
 	var entry struct {
-		Type    string `json:"type"`
-		AITitle string `json:"aiTitle"`
-		Message struct {
+		Type        string `json:"type"`
+		AITitle     string `json:"aiTitle"`
+		CustomTitle string `json:"customTitle"`
+		Message     struct {
 			Model string `json:"model"`
 		} `json:"message"`
 	}
@@ -66,7 +67,15 @@ func scanModelAndTitle(r io.Reader, skipFirst bool) (model, aiTitle string) {
 		if entry.Type == "ai-title" && entry.AITitle != "" {
 			aiTitle = entry.AITitle // keep updating to get the latest
 		}
+		if entry.Type == "custom-title" && entry.CustomTitle != "" {
+			customTitle = entry.CustomTitle
+		}
 	}
+	return model, aiTitle, customTitle
+}
+
+func scanModelAndTitle(r io.Reader, skipFirst bool) (model, aiTitle string) {
+	model, aiTitle, _ = scanModelAndNames(r, skipFirst)
 	return model, aiTitle
 }
 
@@ -74,13 +83,13 @@ func scanModelAndTitle(r io.Reader, skipFirst bool) (model, aiTitle string) {
 // falling back to a full scan only when the tail lacks what the caller needs
 // (a huge pasted attachment can push the latest assistant turn or an older
 // ai-title past the tail window).
-func probeSessionJSONL(path string, needTitle bool) (model, aiTitle string) {
+func probeSessionJSONL(path string, needTitle bool) (model, aiTitle, customTitle string) {
 	if path == "" {
-		return "", ""
+		return "", "", ""
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defer f.Close()
 	start := int64(0)
@@ -89,23 +98,36 @@ func probeSessionJSONL(path string, needTitle bool) (model, aiTitle string) {
 	}
 	if start > 0 {
 		if _, err := f.Seek(start, io.SeekStart); err != nil {
-			return "", ""
+			return "", "", ""
 		}
 	}
-	model, aiTitle = scanModelAndTitle(f, start > 0)
-	if start > 0 && (model == "" || (needTitle && aiTitle == "")) {
+	model, aiTitle, customTitle = scanModelAndNames(f, start > 0)
+	if start > 0 && (model == "" || (needTitle && aiTitle == "" && customTitle == "")) {
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return model, aiTitle
+			return model, aiTitle, customTitle
 		}
-		fullModel, fullTitle := scanModelAndTitle(f, false)
+		fullModel, fullTitle, fullCustomTitle := scanModelAndNames(f, false)
 		if model == "" {
 			model = fullModel
 		}
 		if aiTitle == "" {
 			aiTitle = fullTitle
 		}
+		if customTitle == "" {
+			customTitle = fullCustomTitle
+		}
 	}
-	return model, aiTitle
+	return model, aiTitle, customTitle
+}
+
+func customTitleFromJSONL(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	_, _, title := scanModelAndNames(f, false)
+	return strings.TrimSpace(title)
 }
 
 // firstPromptFromJSONL returns the first user message text in the session.

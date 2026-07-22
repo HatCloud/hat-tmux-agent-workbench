@@ -1,6 +1,7 @@
 package agentclient
 
 import (
+	"context"
 	"testing"
 )
 
@@ -11,6 +12,14 @@ type fakeAdapter struct {
 }
 
 func (f *fakeAdapter) ID() string { return f.id }
+
+func (f *fakeAdapter) SessionName(LiveSession) (SessionNameState, error) {
+	return SessionNameState{Source: SessionNameUnknown}, nil
+}
+
+func (f *fakeAdapter) SetSessionName(context.Context, LiveSession, string) error {
+	return ErrSessionNameUnsupported
+}
 
 func (f *fakeAdapter) Detect(idx *Index, panePID int) (LiveSession, bool) {
 	if f.detect != nil {

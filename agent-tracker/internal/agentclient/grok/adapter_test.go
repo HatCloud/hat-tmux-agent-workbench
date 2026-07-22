@@ -1,8 +1,10 @@
 package grok
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/david/agent-tracker/internal/agentclient"
@@ -85,9 +87,13 @@ func TestDetect_WithFixture(t *testing.T) {
 	]`), 0644)
 	sess := filepath.Join(home, "sessions", "enc", "sid-1")
 	os.MkdirAll(sess, 0755)
-	os.WriteFile(filepath.Join(sess, "summary.json"), []byte(`{
-	  "generated_title":"Hello Grok","current_model_id":"grok-4.5"
-	}`), 0644)
+	summaryPath := filepath.Join(sess, "summary.json")
+	os.WriteFile(summaryPath, []byte(`{
+	  "generated_title":"Hello Grok","session_summary":"Hello Grok","current_model_id":"grok-4.5"
+	}`), 0600)
+	os.WriteFile(filepath.Join(sess, "chat_history.jsonl"), []byte(`{"type":"assistant","content":[{"type":"text","text":"ignore"}]}
+{"type":"user","content":[{"type":"text","text":"  explain the naming flow  "}]}
+`), 0644)
 	os.WriteFile(filepath.Join(sess, "events.jsonl"), []byte(`{"type":"turn_ended"}
 {"type":"phase_changed","phase":"streaming_text"}
 `), 0644)
@@ -107,6 +113,59 @@ func TestDetect_WithFixture(t *testing.T) {
 	if s.Status != agentclient.StatusIdle {
 		t.Fatalf("status %s", s.Status)
 	}
+	state, err := a.SessionName(s)
+	if err != nil || state.Value != "Hello Grok" ||
+		state.Source != agentclient.SessionNameGenerated || state.Writable {
+		t.Fatalf("generated title state = %+v err=%v", state, err)
+	}
+	if got := a.FirstPrompt(s); got != "explain the naming flow" {
+		t.Fatalf("FirstPrompt = %q", got)
+	}
+	if err := a.SetSessionName(context.Background(), s, "Meaningful Name"); err != agentclient.ErrSessionNameUnsupported {
+		t.Fatalf("SetSessionName err=%v, want unsupported", err)
+	}
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got == "" || !strings.Contains(got, `"generated_title":"Hello Grok"`) {
+		t.Fatalf("unsupported write changed summary: %q", got)
+	}
+}
+
+func TestSessionNameDistinguishesInteractiveRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "summary.json")
+	if err := os.WriteFile(path, []byte(`{
+  "generated_title":"User Chosen Name",
+  "session_summary":"Agent generated summary"
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := (&Adapter{}).SessionName(agentclient.LiveSession{SourcePath: dir})
+	if err != nil || state.Value != "User Chosen Name" ||
+		state.Source != agentclient.SessionNameUser || state.Writable {
+		t.Fatalf("renamed state = %+v err=%v", state, err)
+	}
+}
+
+func TestSessionNameUnreadableSummaryIsUnknown(t *testing.T) {
+	state, err := (&Adapter{}).SessionName(agentclient.LiveSession{SourcePath: t.TempDir()})
+	if err != nil || state.Source != agentclient.SessionNameUnknown || state.Writable {
+		t.Fatalf("unreadable state = %+v err=%v", state, err)
+	}
+}
+
+func TestSessionNameIncompleteSummaryIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"),
+		[]byte(`{"generated_title":"Not enough provenance"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := (&Adapter{}).SessionName(agentclient.LiveSession{SourcePath: dir})
+	if err != nil || state.Source != agentclient.SessionNameUnknown || state.Writable {
+		t.Fatalf("incomplete state = %+v err=%v", state, err)
+	}
 }
 
 func TestDetect_HeadlessRejected(t *testing.T) {
@@ -118,4 +177,3 @@ func TestDetect_HeadlessRejected(t *testing.T) {
 		t.Fatal("headless must not detect")
 	}
 }
-
