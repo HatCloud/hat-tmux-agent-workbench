@@ -376,6 +376,7 @@ func runAutoNameModel(ctx context.Context, model autoNameModel, prompt string) (
 		"name": "session-name", "provider": model.Provider, "model": model.Model,
 		"engine": model.Engine, "level": "probe", "prompt": namingPrompt,
 		"schema": schema, "bare": model.Bare, "minimal_config": model.MinimalConfig,
+		"cwd": tmp,
 	}}
 	data, err := json.Marshal(tasks)
 	if err != nil {

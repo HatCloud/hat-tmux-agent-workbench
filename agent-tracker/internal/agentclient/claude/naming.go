@@ -12,13 +12,15 @@ import (
 )
 
 func (a *Adapter) SessionName(s agentclient.LiveSession) (agentclient.SessionNameState, error) {
+	metaState := agentclient.SessionNameState{Source: agentclient.SessionNameNone, Writable: true}
 	if s.PID > 0 {
 		data, err := os.ReadFile(filepath.Join(a.sessionsDir(), fmt.Sprintf("%d.json", s.PID)))
 		if err == nil {
 			var meta sessionMeta
 			if json.Unmarshal(data, &meta) == nil {
-				if name := strings.TrimSpace(meta.Name); name != "" {
-					return agentclient.SessionNameState{Value: name, Source: agentclient.SessionNameUser, Writable: true}, nil
+				metaState = sessionNameStateFromMeta(meta)
+				if metaState.Source == agentclient.SessionNameUser {
+					return metaState, nil
 				}
 			}
 		}
@@ -26,7 +28,7 @@ func (a *Adapter) SessionName(s agentclient.LiveSession) (agentclient.SessionNam
 	if name := customTitleFromJSONL(s.SourcePath); name != "" {
 		return agentclient.SessionNameState{Value: name, Source: agentclient.SessionNameUser, Writable: true}, nil
 	}
-	return agentclient.SessionNameState{Source: agentclient.SessionNameNone, Writable: true}, nil
+	return metaState, nil
 }
 
 func (a *Adapter) SetSessionName(ctx context.Context, s agentclient.LiveSession, name string) error {

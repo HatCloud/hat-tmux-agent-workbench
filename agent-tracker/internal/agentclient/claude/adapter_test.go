@@ -83,6 +83,25 @@ func TestDetectFillsTitleModelStatus(t *testing.T) {
 	}
 }
 
+func TestDerivedMetadataNameRemainsAutoNameEligible(t *testing.T) {
+	home := t.TempDir()
+	writeSession(t, home, 4242,
+		`{"pid":4242,"name":"proj-1","nameSource":"derived","status":"idle","sessionId":"sid-1","cwd":"/proj","entrypoint":"cli"}`,
+		`{"type":"ai-title","aiTitle":"useful default title"}`+"\n")
+	a := &Adapter{Home: home}
+	s, ok := a.Detect(testIndex(4242), 100)
+	if !ok {
+		t.Fatal("expected detect")
+	}
+	if s.Name.Source != agentclient.SessionNameGenerated {
+		t.Fatalf("derived metadata source = %q, want generated", s.Name.Source)
+	}
+	state, err := a.SessionName(s)
+	if err != nil || state.Source != agentclient.SessionNameGenerated || !state.Writable {
+		t.Fatalf("derived session name = %+v err=%v", state, err)
+	}
+}
+
 func TestSessionNamingUsesCustomTitleNotAITitle(t *testing.T) {
 	home := t.TempDir()
 	jsonl := writeSession(t, home, 4242,
@@ -222,6 +241,33 @@ func TestFirstPrompt(t *testing.T) {
 	a := &Adapter{Home: home}
 	if got := a.FirstPrompt(agentclient.LiveSession{SourcePath: jsonl}); got != "first prompt" {
 		t.Fatalf("FirstPrompt = %q", got)
+	}
+}
+
+func TestFirstPromptSkipsLocalCommandRecords(t *testing.T) {
+	home := t.TempDir()
+	jsonl := writeSession(t, home, 4242,
+		`{"pid":4242,"name":"proj-1","nameSource":"derived","status":"idle","sessionId":"sid-1","cwd":"/proj","entrypoint":"cli"}`,
+		`{"type":"user","message":{"role":"user","content":"<local-command-caveat>generated locally</local-command-caveat>"}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>"}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to Opus</local-command-stdout>"}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"fix automatic session naming"}}`+"\n")
+	a := &Adapter{Home: home}
+	if got := a.FirstPrompt(agentclient.LiveSession{SourcePath: jsonl}); got != "fix automatic session naming" {
+		t.Fatalf("FirstPrompt = %q", got)
+	}
+}
+
+func TestFirstPromptWaitsWhenOnlyLocalCommandsExist(t *testing.T) {
+	home := t.TempDir()
+	jsonl := writeSession(t, home, 4242,
+		`{"pid":4242,"name":"proj-1","nameSource":"derived","status":"idle","sessionId":"sid-1","cwd":"/proj","entrypoint":"cli"}`,
+		`{"type":"user","message":{"role":"user","content":"<local-command-caveat>generated locally</local-command-caveat>"}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>"}}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to Opus</local-command-stdout>"}}`+"\n")
+	a := &Adapter{Home: home}
+	if got := a.FirstPrompt(agentclient.LiveSession{SourcePath: jsonl}); got != "" {
+		t.Fatalf("FirstPrompt = %q, want empty until a real user prompt", got)
 	}
 }
 

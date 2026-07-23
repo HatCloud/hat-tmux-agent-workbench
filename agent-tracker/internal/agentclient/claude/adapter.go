@@ -38,15 +38,31 @@ func (a *Adapter) sessionsDir() string {
 
 // sessionMeta mirrors ~/.claude/sessions/<pid>.json.
 type sessionMeta struct {
-	PID       int    `json:"pid"`
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	SessionID string `json:"sessionId"`
-	CWD       string `json:"cwd"`
+	PID        int    `json:"pid"`
+	Name       string `json:"name"`
+	NameSource string `json:"nameSource"`
+	Status     string `json:"status"`
+	SessionID  string `json:"sessionId"`
+	CWD        string `json:"cwd"`
 	// Entrypoint distinguishes the interactive TUI ("cli") from headless runs
 	// ("sdk-cli" for `claude -p`); kind is "interactive" for BOTH, so this is
 	// the only usable discriminator.
 	Entrypoint string `json:"entrypoint"`
+}
+
+func sessionNameStateFromMeta(meta sessionMeta) agentclient.SessionNameState {
+	state := agentclient.SessionNameState{
+		Value: strings.TrimSpace(meta.Name), Source: agentclient.SessionNameNone, Writable: true,
+	}
+	if state.Value == "" {
+		return state
+	}
+	if strings.EqualFold(strings.TrimSpace(meta.NameSource), "derived") {
+		state.Source = agentclient.SessionNameGenerated
+	} else {
+		state.Source = agentclient.SessionNameUser
+	}
+	return state
 }
 
 // isWindowAgentSession reports whether a session should drive window features
@@ -140,24 +156,20 @@ func (a *Adapter) Detect(idx *agentclient.Index, panePID int) (agentclient.LiveS
 			PID:          pid,
 			CWD:          meta.CWD,
 			SourcePath:   jsonl,
-			Name: agentclient.SessionNameState{
-				Value: meta.Name, Source: agentclient.SessionNameNone, Writable: true,
-			},
-		}
-		if meta.Name != "" {
-			s.Name.Source = agentclient.SessionNameUser
+			Name:         sessionNameStateFromMeta(meta),
 		}
 		// Model + ai-title in one bounded read; the full-scan fallback only
 		// triggers while data is actually missing from the tail.
-		model, aiTitle, customTitle := probeSessionJSONL(jsonl, meta.Name == "")
-		if s.Title == "" && customTitle != "" {
+		model, aiTitle, customTitle := probeSessionJSONL(jsonl,
+			meta.Name == "" || s.Name.Source == agentclient.SessionNameGenerated)
+		if customTitle != "" {
 			s.Title = customTitle
 			s.PersistTitle = customTitle
 			s.Name = agentclient.SessionNameState{
 				Value: customTitle, Source: agentclient.SessionNameUser, Writable: true,
 			}
 		}
-		if s.Title == "" && aiTitle != "" {
+		if s.Name.Source != agentclient.SessionNameUser && aiTitle != "" {
 			s.Title = aiTitle
 		}
 		s.Provider = a.providerForPID(idx, pid)

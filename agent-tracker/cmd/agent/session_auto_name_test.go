@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -132,6 +135,46 @@ func TestGenerateSessionNameFallsBackInOrder(t *testing.T) {
 	want := []string{"openai/gpt-5.6-luna", "deepseek/deepseek-v4-flash[1m]"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+func TestRunAutoNameModelUsesIsolatedCWD(t *testing.T) {
+	binDir := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "tasks.json")
+	stub := filepath.Join(binDir, "agent-hl-cli")
+	script := `#!/bin/sh
+tasks=""
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --tasks) tasks="$2"; shift 2 ;;
+    --output) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp "$tasks" "$AUTONAME_CAPTURE"
+printf '%s\n' '{"results":[{"status":"ok","structured_output":{"name":"isolated"}}]}' > "$output"
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AUTONAME_CAPTURE", capture)
+	if _, err := runAutoNameModel(context.Background(), autoNameModels[0], "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tasks []struct {
+		CWD string `json:"cwd"`
+	}
+	if err := json.Unmarshal(data, &tasks); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || strings.TrimSpace(tasks[0].CWD) == "" {
+		t.Fatalf("auto-name task cwd = %q, want an isolated temporary directory", tasks[0].CWD)
 	}
 }
 

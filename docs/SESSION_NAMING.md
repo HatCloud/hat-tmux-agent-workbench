@@ -13,11 +13,11 @@
 
 `Writable` 只表示该 adapter 已验证安全写入路径。自动命名会先把名称与 `client:sessionId` provenance 写入 tmux option，再调用 adapter；这样 adapter 下一轮读到的“user”值若等于本 tracker 生成值，仍按级别 3 处理。值不同才代表用户后来原生 rename，升到级别 1。
 
-## 2026-07-21 检测结果
+## 2026-07-23 检测结果
 
 | Agent（本机版本） | 读取 / 判断名称 | 外部写入 | 当前支持 |
 |---|---|---|---|
-| Claude Code 2.1.217 | `~/.claude/sessions/<pid>.json.name` 或 project JSONL 最新 `custom-title` = user；`ai-title` = generated default | 原子追加 `{"type":"custom-title","customTitle":…,"sessionId":…}` 到当前 project JSONL；只允许 `.claude/projects` 内已存在 transcript，写前拒绝已有 user name | read + detect + write |
+| Claude Code 2.1.218 | `~/.claude/sessions/<pid>.json.nameSource` 非 `derived` 或 project JSONL 最新 `custom-title` = user；`nameSource:"derived"` 与 `ai-title` = generated default | 原子追加 `{"type":"custom-title","customTitle":…,"sessionId":…}` 到当前 project JSONL；只允许 `.claude/projects` 内已存在 transcript，写前拒绝已有 user name | read + detect + write |
 | Codex CLI 0.145.0 | `threads.title` 与 session index 首条 `thread_name` 是默认显示标题；同一 id 后续出现不同 `thread_name` 是当前 CLI `/rename` 的可观测信号，取最后值；非空 `threads.name` 是 app-server 显式名称兼容来源 | 启动本地 `codex app-server --listen stdio://`，握手后调用 `thread/name/set`；写前经同一名称解析器重读 | read + detect + write |
 | Grok Build 0.2.106 | `summary.json.generated_title == session_summary` = generated default；两者不同 = `/rename` user name；文件无效或 provenance 字段不完整时为 unknown | 当前 CLI/ACP 未发现可验证的外部 rename 合同；`SetSessionName` 明确返回 unsupported，使用 tracker-owned alias | read + detect；write unsupported |
 
@@ -35,14 +35,14 @@ grok sessions --help
 grok agent stdio --help
 ```
 
-当前期望版本输出依次包含 `2.1.217`、`Set a display name for this session`、`codex-cli 0.145.0`、app-server/schema 生成子命令，以及 `grok 0.2.106`；Grok 的 sessions 子命令只有 list/search/delete，stdio help 也不公布 rename。`thread/name/set` 和 Grok **交互式** `/rename` 的具体合同以本节链接的官方协议/命令文档为准；后者不等于外部写入 API。
+当前期望版本输出依次包含 `2.1.218`、`Set a display name for this session`、`codex-cli 0.145.0`、app-server/schema 生成子命令，以及 `grok 0.2.106`；Grok 的 sessions 子命令只有 list/search/delete，stdio help 也不公布 rename。`thread/name/set` 和 Grok **交互式** `/rename` 的具体合同以本节链接的官方协议/命令文档为准；后者不等于外部写入 API。
 
 ## 证据与边界
 
 ### Claude Code
 
 - 本机 `claude --help` 暴露 `-n, --name <name>`，说明 CLI 有原生 session display name；[Anthropic CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage) 是官方 CLI/`--resume`/headless 合同入口，但页面抓取版本尚未列出 `--name`，故以当前安装版 help 为运行时真相。
-- 本机真实 transcript 中人工 rename 产生独立 `custom-title` record，和模型生成的 `ai-title` 分开；当前 adapter 按这一 shape 写入。这里不是公开 RPC，升级 Claude 后若 record shape 变化必须重新验证，解析失败应退到 tracker-owned 名称而非修改未知格式。
+- 本机真实 transcript 中人工 rename 产生独立 `custom-title` record，和模型生成的 `ai-title` 分开。2.1.218 的 live session metadata 还会为非人工名称写 `nameSource:"derived"`；该值不能当成 user name，否则自动命名会被永久挡在派发前。当前 adapter 将 `derived` 归为 generated，缺少 `nameSource` 的旧版本非空 `name` 仍保守归为 user。这里不是公开 RPC，升级 Claude 后若 record shape 变化必须重新验证，解析失败应退到 tracker-owned 名称而非修改未知格式。
 
 ### Codex
 
@@ -62,4 +62,4 @@ grok agent stdio --help
 2. 分别回答：能否读取名称、能否区分用户名称与默认标题、能否从外部安全写入。
 3. 三项可行时实现 `SessionNamer`，并测试 unnamed、user-named、写入、拒绝覆盖和旧版本降级。
 4. 只读或完全不支持时仍须实现强制接口，返回 `Writable=false` / `ErrSessionNameUnsupported`，并在本文件留下证据；编排层会使用 tracker-owned level-3 名称。
-5. 若支持自动命名上下文，实现 `FirstPrompter`，只返回第一条用户 prompt，不把完整 transcript 持久化到 tmux。
+5. 若支持自动命名上下文，实现 `FirstPrompter`，只返回第一条真实用户 prompt；必须过滤 project/skill instruction、local command、tool result 等伪 user record，不把完整 transcript 持久化到 tmux。

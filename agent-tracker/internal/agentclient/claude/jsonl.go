@@ -142,9 +142,11 @@ func firstPromptFromJSONL(path string) string {
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1<<20), 4<<20)
+	localCommand := false
 	for scanner.Scan() {
 		var raw struct {
 			Type    string `json:"type"`
+			IsMeta  bool   `json:"isMeta"`
 			Message struct {
 				Role    string          `json:"role"`
 				Content json.RawMessage `json:"content"`
@@ -154,11 +156,34 @@ func firstPromptFromJSONL(path string) string {
 			raw.Type != "user" || raw.Message.Role != "user" {
 			continue
 		}
-		if prompt := strings.TrimSpace(textFromJSONContent(raw.Message.Content)); prompt != "" {
+		prompt := strings.TrimSpace(textFromJSONContent(raw.Message.Content))
+		if strings.HasPrefix(prompt, "<local-command-caveat") {
+			localCommand = true
+			continue
+		}
+		if raw.IsMeta || isClaudePromptNoise(prompt) ||
+			(localCommand && strings.HasPrefix(prompt, "<command-")) {
+			continue
+		}
+		if prompt != "" {
 			return prompt
 		}
 	}
 	return ""
+}
+
+func isClaudePromptNoise(prompt string) bool {
+	prompt = strings.TrimSpace(prompt)
+	for _, prefix := range []string{
+		"<task-notification", "<local-command", "<bash-", "<function_results",
+		"<tool_use_error", "<telem",
+	} {
+		if strings.HasPrefix(prompt, prefix) {
+			return true
+		}
+	}
+	return prompt == "Continue where you left off." ||
+		prompt == "Continue from where you left off."
 }
 
 // textFromJSONContent flattens a message content field that is either a plain
